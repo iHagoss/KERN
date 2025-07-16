@@ -34,4 +34,5 @@ jobs:
           TOKEN: ${{ secrets.GH_PUSH_TOKEN }}
         run: |
           git remote set-url origin https://x-access-token:${TOKEN}@github.com/iHagoss/KERN.git
+          git config --global credential.helper ""
           git push origin HEAD:main
