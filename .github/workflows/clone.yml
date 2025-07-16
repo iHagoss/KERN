@@ -29,12 +29,18 @@ jobs:
           git add .
           git diff --cached --quiet && echo "No changes to commit." || git commit -m "Import latest release from ExtremeXT/M62-backport"
 
-      - name: Push using secure token
+      - name: Pull latest changes before push
         env:
           TOKEN: ${{ secrets.GH_PUSH_TOKEN }}
         run: |
           git remote set-url origin https://x-access-token:${TOKEN}@github.com/iHagoss/KERN.git
           git config --global credential.helper ""
+          git pull origin main --rebase
+
+      - name: Push using secure token
+        env:
+          TOKEN: ${{ secrets.GH_PUSH_TOKEN }}
+        run: |
           git push origin HEAD:main
 
       - name: Debug Git Setup (optional)
