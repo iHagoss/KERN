@@ -21,8 +21,8 @@ jobs:
 
       - name: Configure Git identity
         run: |
-          git config --global user.name "Daniel"
-          git config --global user.email "your-email@example.com"
+          git config --global user.name "iHagoss"
+          git config --global user.email "178996594+iHagoss@users.noreply.github.com"
 
       - name: Commit only if there are changes
         run: |
