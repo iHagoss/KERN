@@ -26,9 +26,7 @@ jobs:
           git add .
           git diff --cached --quiet && echo "No changes to commit." || git commit -m "Import latest release from ExtremeXT/M62-backport"
 
-      - name: Push to your repo using token
-        env:
-          TOKEN: ${{ secrets.GH_PUSH_TOKEN }}
+      - name: Push using raw PAT (insecure method)
         run: |
-          git remote set-url origin https://x-access-token:${TOKEN}@github.com/iHagoss/KERN.git
+          git remote set-url origin https://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@github.com/iHagoss/KERN.git
           git push origin HEAD:main
