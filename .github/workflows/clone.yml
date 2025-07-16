@@ -1,0 +1,30 @@
+name: Clone Latest Release
+
+on:
+  workflow_dispatch:
+
+jobs:
+  import-latest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout your repo
+        uses: actions/checkout@v4
+
+      - name: Download latest release zip
+        run: |
+          curl -L -o latest.zip https://github.com/ExtremeXT/M62-backport/archive/refs/tags/latest.zip
+
+      - name: Unzip release
+        run: |
+          unzip latest.zip
+          rm latest.zip
+          # Move contents to root if needed
+          mv M62-backport-*/* .
+
+      - name: Commit and push
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "github-actions@github.com"
+          git add .
+          git commit -m "Import latest release from ExtremeXT/M62-backport"
+          git push
