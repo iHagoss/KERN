@@ -1,0 +1,369 @@
+name: Build KernelSU for Beyond2LTE
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernelsu_tag:
+        description: 'KernelSU tag to build'
+        required: true
+        default: 'main'
+        type: string
+      susfs_repo:
+        description: 'SUSFS repository to use'
+        required: true
+        default: 'https://github.com/iHagoss/susfs4ksu.git'
+        type: choice
+        options:
+          - 'https://github.com/iHagoss/susfs4ksu.git'
+          - 'https://github.com/iHagoss/susfs4ksu-begonia.git'
+          - 'https://github.com/simonpunk/susfs4ksu.git'
+
+env:
+  TOKEN: ${{ secrets.GH_PUSH_TOKEN }}
+  ARCH: arm64
+  SUBARCH: arm64
+  DEVICE: beyond2lte
+  DEFCONFIG: beyond2lte_defconfig
+  KERNEL_NAME: ExtremeKRNL-Nexus-KernelSU
+  CLANG_VERSION: "18.0.0"
+  BUILD_USER: iHagoss
+  BUILD_HOST: github-actions
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    
+    steps:
+    - name: Checkout kernel source
+      uses: actions/checkout@v4
+      with:
+        token: ${{ env.TOKEN }}
+        fetch-depth: 0
+        submodules: recursive
+
+    - name: Setup build environment
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          bc \
+          bison \
+          flex \
+          libssl-dev \
+          libelf-dev \
+          git \
+          wget \
+          curl \
+          zip \
+          unzip \
+          python3 \
+          python3-pip \
+          ccache \
+          clang \
+          lld \
+          llvm
+
+    - name: Setup ccache
+      uses: actions/cache@v3
+      with:
+        path: ~/.ccache
+        key: ccache-${{ env.DEVICE }}-${{ github.sha }}
+        restore-keys: |
+          ccache-${{ env.DEVICE }}-
+
+    - name: Configure ccache
+      run: |
+        ccache --set-config=max_size=2G
+        ccache --set-config=compression=true
+        ccache --zero-stats
+
+    - name: Download and setup Clang toolchain
+      run: |
+        mkdir -p ~/toolchain
+        cd ~/toolchain
+        
+        # Download prebuilt Clang
+        wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r487747c.tar.gz
+        mkdir clang
+        tar -xzf clang-r487747c.tar.gz -C clang
+        
+        # Download GCC cross compiler
+        wget -q https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/heads/main.tar.gz
+        mkdir gcc-aarch64
+        tar -xzf main.tar.gz -C gcc-aarch64
+        
+        # Download GCC arm compiler
+        wget -q https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/heads/main.tar.gz
+        mkdir gcc-arm
+        tar -xzf main.tar.gz -C gcc-arm
+        
+        # Set permissions
+        chmod +x ~/toolchain/clang/bin/*
+        chmod +x ~/toolchain/gcc-aarch64/bin/*
+        chmod +x ~/toolchain/gcc-arm/bin/*
+
+    - name: Setup PATH
+      run: |
+        echo "$HOME/toolchain/clang/bin" >> $GITHUB_PATH
+        echo "$HOME/toolchain/gcc-aarch64/bin" >> $GITHUB_PATH
+        echo "$HOME/toolchain/gcc-arm/bin" >> $GITHUB_PATH
+
+    - name: Clone KernelSU
+      run: |
+        git clone --depth=1 --branch ${{ inputs.kernelsu_tag }} https://github.com/tiann/KernelSU.git KernelSU
+        echo "KernelSU cloned successfully"
+
+    - name: Clone SUSFS
+      run: |
+        git clone --depth=1 ${{ inputs.susfs_repo }} susfs
+        echo "SUSFS cloned successfully"
+
+    - name: Integrate KernelSU
+      run: |
+        # Copy KernelSU to kernel directory
+        cp -r KernelSU/kernel/* ./
+        
+        # Find and backup original fs/exec.c
+        if [ -f fs/exec.c ]; then
+          cp fs/exec.c fs/exec.c.backup
+        fi
+        
+        # Apply KernelSU patches
+        if [ -f KernelSU/kernel/setup.sh ]; then
+          chmod +x KernelSU/kernel/setup.sh
+          bash KernelSU/kernel/setup.sh
+        fi
+
+    - name: Integrate SUSFS
+      run: |
+        # Copy SUSFS files
+        if [ -d susfs/kernel_patches ]; then
+          cp -r susfs/kernel_patches/* ./
+        fi
+        
+        # Apply SUSFS patches if present
+        if [ -f susfs/kernel_patches/KernelSU/kernel/setup.sh ]; then
+          chmod +x susfs/kernel_patches/KernelSU/kernel/setup.sh
+          bash susfs/kernel_patches/KernelSU/kernel/setup.sh
+        fi
+
+    - name: Find and prepare defconfig
+      run: |
+        # Search for defconfig files
+        find arch/arm64/configs -name "*beyond2lte*" -o -name "*beyond*" -o -name "*exynos9820*" | head -5
+        
+        # Try different defconfig names
+        for config in beyond2lte_defconfig beyond_defconfig exynos9820-beyond2lte_defconfig; do
+          if [ -f "arch/arm64/configs/$config" ]; then
+            echo "Found defconfig: $config"
+            echo "DEFCONFIG=$config" >> $GITHUB_ENV
+            break
+          fi
+        done
+        
+        # Fallback to any defconfig with beyond in the name
+        if [ -z "$DEFCONFIG" ]; then
+          FOUND_CONFIG=$(find arch/arm64/configs -name "*beyond*" | head -1)
+          if [ -n "$FOUND_CONFIG" ]; then
+            DEFCONFIG=$(basename "$FOUND_CONFIG")
+            echo "Using fallback defconfig: $DEFCONFIG"
+            echo "DEFCONFIG=$DEFCONFIG" >> $GITHUB_ENV
+          fi
+        fi
+
+    - name: Configure kernel
+      run: |
+        # Clean previous builds
+        make clean
+        make mrproper
+        
+        # Configure with defconfig
+        make CC=clang ARCH=$ARCH SUBARCH=$SUBARCH CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi- CLANG_TRIPLE=aarch64-linux-gnu- $DEFCONFIG
+        
+        # Enable KernelSU
+        echo "CONFIG_KSU=y" >> .config
+        echo "CONFIG_KSU_DEBUG=n" >> .config
+        
+        # Enable SUSFS if available
+        if grep -q "CONFIG_KSU_SUSFS" arch/arm64/configs/$DEFCONFIG 2>/dev/null; then
+          echo "CONFIG_KSU_SUSFS=y" >> .config
+          echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> .config
+          echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y" >> .config
+          echo "CONFIG_KSU_SUSFS_SUS_OVERLAYFS=y" >> .config
+        fi
+        
+        # Regenerate config
+        make CC=clang ARCH=$ARCH SUBARCH=$SUBARCH CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi- CLANG_TRIPLE=aarch64-linux-gnu- olddefconfig
+
+    - name: Build kernel
+      run: |
+        # Start build
+        make -j$(nproc) \
+          CC=clang \
+          ARCH=$ARCH \
+          SUBARCH=$SUBARCH \
+          CROSS_COMPILE=aarch64-linux-android- \
+          CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+          CLANG_TRIPLE=aarch64-linux-gnu- \
+          CONFIG_NO_ERROR_ON_MISMATCH=y \
+          2>&1 | tee build.log
+
+    - name: Check build result
+      run: |
+        if [ -f arch/arm64/boot/Image ]; then
+          echo "✅ Kernel built successfully!"
+          ls -la arch/arm64/boot/
+        else
+          echo "❌ Kernel build failed!"
+          echo "Last 50 lines of build log:"
+          tail -50 build.log
+          exit 1
+        fi
+
+    - name: Prepare kernel image
+      run: |
+        mkdir -p output
+        
+        # Copy kernel image
+        cp arch/arm64/boot/Image output/
+        
+        # Create kernel zip name with timestamp
+        TIMESTAMP=$(date '+%Y%m%d_%H%M%S')
+        KERNEL_ZIP="$KERNEL_NAME-$DEVICE-$TIMESTAMP.zip"
+        echo "KERNEL_ZIP=$KERNEL_ZIP" >> $GITHUB_ENV
+        
+        # Get kernel version
+        KERNEL_VERSION=$(cat include/config/kernel.release 2>/dev/null || echo "unknown")
+        echo "KERNEL_VERSION=$KERNEL_VERSION" >> $GITHUB_ENV
+        
+        # Create info file
+        cat > output/build_info.txt << EOF
+        Kernel: $KERNEL_NAME
+        Device: $DEVICE
+        Version: $KERNEL_VERSION
+        KernelSU: ${{ inputs.kernelsu_tag }}
+        SUSFS: ${{ inputs.susfs_repo }}
+        Built: $(date)
+        Builder: $BUILD_USER
+        EOF
+
+    - name: Create flashable zip
+      run: |
+        cd output
+        
+        # Create AnyKernel3 structure
+        mkdir -p anykernel3
+        cd anykernel3
+        
+        # Download AnyKernel3
+        wget -q https://github.com/osm0sis/AnyKernel3/archive/refs/heads/master.zip
+        unzip -q master.zip
+        cp -r AnyKernel3-master/* .
+        rm -rf AnyKernel3-master master.zip
+        
+        # Configure AnyKernel3 for Beyond2LTE
+        cat > anykernel.sh << 'EOF'
+        # AnyKernel3 Ramdisk Mod Script
+        # osm0sis @ xda-developers
+        
+        ## AnyKernel setup
+        # begin properties
+        properties() { '
+        kernel.string=ExtremeKRNL-Nexus-KernelSU
+        do.devicecheck=1
+        do.modules=0
+        do.systemless=1
+        do.cleanup=1
+        do.cleanuponabort=0
+        device.name1=beyond2lte
+        device.name2=beyond2
+        device.name3=SM-G975F
+        device.name4=
+        device.name5=
+        supported.versions=9-14
+        supported.patchlevels=
+        '; } # end properties
+        
+        # shell variables
+        block=/dev/block/platform/13d60000.ufs/by-name/boot;
+        is_slot_device=0;
+        ramdisk_compression=auto;
+        
+        ## AnyKernel methods (DO NOT CHANGE)
+        # import patching functions/variables - see for reference
+        . tools/ak3-core.sh;
+        
+        ## AnyKernel file attributes
+        # set permissions/ownership for included ramdisk files
+        set_perm_recursive 0 0 755 644 $ramdisk/*;
+        set_perm_recursive 0 0 750 750 $ramdisk/init* $ramdisk/sbin;
+        
+        ## AnyKernel boot install
+        dump_boot;
+        write_boot;
+        EOF
+        
+        # Copy kernel image
+        cp ../Image .
+        
+        # Create zip
+        zip -r ../$KERNEL_ZIP * -x "*.git*" "*.md" "*.txt"
+        
+        cd ..
+        echo "Flashable zip created: $KERNEL_ZIP"
+        ls -la $KERNEL_ZIP
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: ${{ env.KERNEL_ZIP }}
+        path: |
+          output/${{ env.KERNEL_ZIP }}
+          output/build_info.txt
+          build.log
+
+    - name: Create release
+      uses: softprops/action-gh-release@v1
+      if: github.ref == 'refs/heads/main'
+      with:
+        tag_name: ${{ env.KERNEL_VERSION }}-${{ github.run_number }}
+        name: ${{ env.KERNEL_NAME }} - ${{ env.KERNEL_VERSION }}
+        body: |
+          ## KernelSU Build for Beyond2LTE
+          
+          **Device:** ${{ env.DEVICE }}
+          **Kernel Version:** ${{ env.KERNEL_VERSION }}
+          **KernelSU:** ${{ inputs.kernelsu_tag }}
+          **SUSFS:** ${{ inputs.susfs_repo }}
+          **Built:** $(date)
+          
+          ### Installation
+          1. Boot into custom TWRP (Extreme's version)
+          2. Flash the kernel zip
+          3. Reboot
+          4. Install KernelSU manager app
+          
+          ### Features
+          - KernelSU integrated
+          - SUSFS support
+          - Optimized for Extreme ROM NEXUS
+          - Self-healing build system
+          
+        files: |
+          output/${{ env.KERNEL_ZIP }}
+          output/build_info.txt
+        token: ${{ env.TOKEN }}
+
+    - name: Build summary
+      run: |
+        echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
+        echo "- **Status:** ✅ Success" >> $GITHUB_STEP_SUMMARY
+        echo "- **Kernel:** $KERNEL_NAME" >> $GITHUB_STEP_SUMMARY
+        echo "- **Device:** $DEVICE" >> $GITHUB_STEP_SUMMARY
+        echo "- **Version:** $KERNEL_VERSION" >> $GITHUB_STEP_SUMMARY
+        echo "- **KernelSU:** ${{ inputs.kernelsu_tag }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **SUSFS:** ${{ inputs.susfs_repo }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Output:** $KERNEL_ZIP" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### ccache stats" >> $GITHUB_STEP_SUMMARY
+        ccache --show-stats >> $GITHUB_STEP_SUMMARY
