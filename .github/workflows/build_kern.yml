@@ -6,15 +6,15 @@ on:
       kernelsu_variant:
         description: 'KernelSU variant to build'
         required: true
-        default: 'next'
+        default: 'KernelSU-Next'
         type: choice
         options:
-          - 'next'
-          - 'original'
+          - 'KernelSU-Next'
+          - 'KernelSU'
       kernelsu_tag:
         description: 'KernelSU tag to build'
         required: true
-        default: 'master'
+        default: 'next'
         type: string
       susfs_repo:
         description: 'SUSFS repository to use'
@@ -140,8 +140,8 @@ jobs:
 
     - name: Clone KernelSU
       run: |
-        if [ "${{ inputs.kernelsu_variant }}" == "next" ]; then
-          git clone --depth=1 --branch ${{ inputs.kernelsu_tag }} https://github.com/KernelSU-Next/KernelSU-Next.git KernelSU
+        if [ "${{ inputs.kernelsu_variant }}" == "KernelSU-Next" ]; then
+          git clone --depth=1 --branch ${{ inputs.kernelsu_tag }} https://github.com/KernelSU-Next/KernelSU-Next.git KernelSU-Next
         else
           git clone --depth=1 --branch ${{ inputs.kernelsu_tag }} https://github.com/tiann/KernelSU.git KernelSU
         fi
