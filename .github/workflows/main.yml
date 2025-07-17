@@ -30,7 +30,7 @@ jobs:
         run: |
           cd github-repo
           git config user.name "iHagoss"
-          git config user.email "ihagoss@users.noreply.github.com"
+          git config user.email "178996594+iHagoss@users.noreply.github.com"
           git add .
           git commit -m "Force sync from GitLab susfs4ksu" || echo "No changes to commit"
-          git push --force https://iHagoss:${GH_PUSH_TOKEN}@github.com/iHagoss/SUSFS.git HEAD:main
+          git push --force https://iHagoss:${GH_PUSH_TOKEN}@github.com/iHagoss/KERN.git HEAD:SUSFS
