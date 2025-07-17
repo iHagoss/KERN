@@ -1,0 +1,36 @@
+name: Import SUSFS from GitLab
+
+on:
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout GitHub repo
+        uses: actions/checkout@v3
+        with:
+          path: github-repo
+
+      - name: Clone GitLab repo (master branch)
+        run: |
+          git clone --depth=1 --branch master https://gitlab.com/simonpunk/susfs4ksu.git gitlab-susfs
+          if [ ! -d "gitlab-susfs" ]; then
+            echo "❌ GitLab repo failed to clone. Exiting."
+            exit 1
+          fi
+          # Remove everything except .github and .git
+          find github-repo -mindepth 1 ! -regex '^github-repo/\.git\(/.*\)?' ! -regex '^github-repo/\.github\(/.*\)?' -exec rm -rf {} +
+          cp -a gitlab-susfs/. github-repo/
+
+      - name: Force Push to GitHub
+        env:
+          GH_PUSH_TOKEN: ${{ secrets.GH_PUSH_TOKEN }}
+        run: |
+          cd github-repo
+          git config user.name "iHagoss"
+          git config user.email "178996594+iHagoss@users.noreply.github.com"
+          git add .
+          git commit -m "Force sync from GitLab susfs4ksu" || echo "No changes to commit"
+          git push --force https://iHagoss:${GH_PUSH_TOKEN}@github.com/iHagoss/SUSFS.git HEAD:susfs
