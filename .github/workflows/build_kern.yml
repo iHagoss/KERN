@@ -16,7 +16,7 @@ on:
         options:
           - 'https://github.com/iHagoss/susfs4ksu.git'
           - 'https://github.com/iHagoss/susfs4ksu-begonia.git'
-          - 'https://github.com/simonpunk/susfs4ksu.git'
+          - 'https://gitlab.com/simonpunk/susfs4ksu.git'
 
 env:
   GITHUB_TOKEN: ${{ secrets.GH_PUSH_TOKEN }}
