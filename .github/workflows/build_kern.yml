@@ -64,7 +64,7 @@ jobs:
           llvm
 
     - name: Setup ccache
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: ~/.ccache
         key: ccache-${{ env.DEVICE }}-${{ github.sha }}
@@ -314,7 +314,7 @@ jobs:
         ls -la $KERNEL_ZIP
 
     - name: Upload artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: ${{ env.KERNEL_ZIP }}
         path: |
