@@ -3,6 +3,14 @@ name: Build KernelSU for Beyond2LTE
 on:
   workflow_dispatch:
     inputs:
+      kernelsu_variant:
+        description: 'KernelSU variant to build'
+        required: true
+        default: 'next'
+        type: choice
+        options:
+          - 'next'
+          - 'original'
       kernelsu_tag:
         description: 'KernelSU tag to build'
         required: true
@@ -11,19 +19,33 @@ on:
       susfs_repo:
         description: 'SUSFS repository to use'
         required: true
-        default: 'https://github.com/iHagoss/susfs4ksu.git'
+        default: 'https://gitlab.com/simonpunk/susfs4ksu.git'
         type: choice
         options:
+          - 'https://gitlab.com/simonpunk/susfs4ksu.git'
           - 'https://github.com/iHagoss/susfs4ksu.git'
           - 'https://github.com/iHagoss/susfs4ksu-begonia.git'
-          - 'https://gitlab.com/simonpunk/susfs4ksu.git'
+      device:
+        description: 'Device to build for'
+        required: true
+        default: 'beyond2lte'
+        type: choice
+        options:
+          - 'beyond2lte'
+          - 'beyond1lte'
+          - 'beyond0lte'
+          - 'beyondx'
+          - 'beyondxq'
+          - 'beyond0q'
+          - 'beyond1q'
+          - 'beyond2q'
 
 env:
   GITHUB_TOKEN: ${{ secrets.GH_PUSH_TOKEN }}
   ARCH: arm64
   SUBARCH: arm64
-  DEVICE: beyond2lte
-  DEFCONFIG: beyond2lte_defconfig
+  DEVICE: ${{ inputs.device }}
+  DEFCONFIG: ${{ inputs.device }}_defconfig
   KERNEL_NAME: ExtremeKRNL-Nexus-KernelSU
   CLANG_VERSION: "18.0.0"
   BUILD_USER: iHagoss
@@ -118,7 +140,11 @@ jobs:
 
     - name: Clone KernelSU
       run: |
-        git clone --depth=1 --branch ${{ inputs.kernelsu_tag }} https://github.com/tiann/KernelSU.git KernelSU
+        if [ "${{ inputs.kernelsu_variant }}" == "next" ]; then
+          git clone --depth=1 --branch ${{ inputs.kernelsu_tag }} https://github.com/KernelSU-Next/KernelSU-Next.git KernelSU
+        else
+          git clone --depth=1 --branch ${{ inputs.kernelsu_tag }} https://github.com/tiann/KernelSU.git KernelSU
+        fi
         echo "KernelSU cloned successfully"
 
     - name: Clone SUSFS
@@ -158,10 +184,10 @@ jobs:
     - name: Find and prepare defconfig
       run: |
         # Search for defconfig files
-        find arch/arm64/configs -name "*beyond2lte*" -o -name "*beyond*" -o -name "*exynos9820*" | head -5
+        find arch/arm64/configs -name "*${{ inputs.device }}*" -o -name "*beyond*" -o -name "*exynos9820*" | head -10
         
         # Try different defconfig names
-        for config in beyond2lte_defconfig beyond_defconfig exynos9820-beyond2lte_defconfig; do
+        for config in ${{ inputs.device }}_defconfig ${DEVICE}_defconfig beyond2lte_defconfig beyond_defconfig exynos9820-beyond2lte_defconfig; do
           if [ -f "arch/arm64/configs/$config" ]; then
             echo "Found defconfig: $config"
             echo "DEFCONFIG=$config" >> $GITHUB_ENV
@@ -169,21 +195,40 @@ jobs:
           fi
         done
         
-        # Fallback to any defconfig with beyond in the name
+        # Fallback to any defconfig with device name in it
         if [ -z "$DEFCONFIG" ]; then
-          FOUND_CONFIG=$(find arch/arm64/configs -name "*beyond*" | head -1)
+          FOUND_CONFIG=$(find arch/arm64/configs -name "*${{ inputs.device }}*" | head -1)
           if [ -n "$FOUND_CONFIG" ]; then
             DEFCONFIG=$(basename "$FOUND_CONFIG")
             echo "Using fallback defconfig: $DEFCONFIG"
             echo "DEFCONFIG=$DEFCONFIG" >> $GITHUB_ENV
+          else
+            # Last resort - try beyond configs
+            FOUND_CONFIG=$(find arch/arm64/configs -name "*beyond*" | head -1)
+            if [ -n "$FOUND_CONFIG" ]; then
+              DEFCONFIG=$(basename "$FOUND_CONFIG")
+              echo "Using beyond fallback defconfig: $DEFCONFIG"
+              echo "DEFCONFIG=$DEFCONFIG" >> $GITHUB_ENV
+            fi
           fi
         fi
 
     - name: Configure kernel
       run: |
-        # Clean previous builds
-        make clean
-        make mrproper
+        # Ensure we have a Makefile for clean
+        if [ ! -f Makefile ]; then
+          echo "No Makefile found, attempting to create basic structure"
+          ls -la
+          exit 1
+        fi
+        
+        # Clean previous builds if targets exist
+        if make -n clean >/dev/null 2>&1; then
+          make clean
+        fi
+        if make -n mrproper >/dev/null 2>&1; then
+          make mrproper
+        fi
         
         # Configure with defconfig
         make CC=clang ARCH=$ARCH SUBARCH=$SUBARCH CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi- CLANG_TRIPLE=aarch64-linux-gnu- $DEFCONFIG
@@ -237,7 +282,7 @@ jobs:
         
         # Create kernel zip name with timestamp
         TIMESTAMP=$(date '+%Y%m%d_%H%M%S')
-        KERNEL_ZIP="$KERNEL_NAME-$DEVICE-$TIMESTAMP.zip"
+        KERNEL_ZIP="$KERNEL_NAME-$DEVICE-${{ inputs.kernelsu_variant }}-$TIMESTAMP.zip"
         echo "KERNEL_ZIP=$KERNEL_ZIP" >> $GITHUB_ENV
         
         # Get kernel version
@@ -249,7 +294,7 @@ jobs:
         Kernel: $KERNEL_NAME
         Device: $DEVICE
         Version: $KERNEL_VERSION
-        KernelSU: ${{ inputs.kernelsu_tag }}
+        KernelSU: ${{ inputs.kernelsu_variant }} (${{ inputs.kernelsu_tag }})
         SUSFS: ${{ inputs.susfs_repo }}
         Built: $(date)
         Builder: $BUILD_USER
@@ -269,8 +314,8 @@ jobs:
         cp -r AnyKernel3-master/* .
         rm -rf AnyKernel3-master master.zip
         
-        # Configure AnyKernel3 for Beyond2LTE
-        cat > anykernel.sh << 'EOF'
+        # Configure AnyKernel3 for selected device
+        cat > anykernel.sh << EOF
         # AnyKernel3 Ramdisk Mod Script
         # osm0sis @ xda-developers
         
@@ -283,9 +328,9 @@ jobs:
         do.systemless=1
         do.cleanup=1
         do.cleanuponabort=0
-        device.name1=beyond2lte
-        device.name2=beyond2
-        device.name3=SM-G975F
+        device.name1=${{ inputs.device }}
+        device.name2=$(echo ${{ inputs.device }} | sed 's/lte//')
+        device.name3=SM-G97$(echo ${{ inputs.device }} | grep -o '[0-9]' | head -1)F
         device.name4=
         device.name5=
         supported.versions=9-14
@@ -303,8 +348,8 @@ jobs:
         
         ## AnyKernel file attributes
         # set permissions/ownership for included ramdisk files
-        set_perm_recursive 0 0 755 644 $ramdisk/*;
-        set_perm_recursive 0 0 750 750 $ramdisk/init* $ramdisk/sbin;
+        set_perm_recursive 0 0 755 644 \$ramdisk/*;
+        set_perm_recursive 0 0 750 750 \$ramdisk/init* \$ramdisk/sbin;
         
         ## AnyKernel boot install
         dump_boot;
@@ -337,11 +382,11 @@ jobs:
         tag_name: ${{ env.KERNEL_VERSION }}-${{ github.run_number }}
         name: ${{ env.KERNEL_NAME }} - ${{ env.KERNEL_VERSION }}
         body: |
-          ## KernelSU Build for Beyond2LTE
+          ## KernelSU Build for ${{ inputs.device }}
           
           **Device:** ${{ env.DEVICE }}
           **Kernel Version:** ${{ env.KERNEL_VERSION }}
-          **KernelSU:** ${{ inputs.kernelsu_tag }}
+          **KernelSU:** ${{ inputs.kernelsu_variant }} (${{ inputs.kernelsu_tag }})
           **SUSFS:** ${{ inputs.susfs_repo }}
           **Built:** $(date)
           
@@ -369,7 +414,7 @@ jobs:
         echo "- **Kernel:** $KERNEL_NAME" >> $GITHUB_STEP_SUMMARY
         echo "- **Device:** $DEVICE" >> $GITHUB_STEP_SUMMARY
         echo "- **Version:** $KERNEL_VERSION" >> $GITHUB_STEP_SUMMARY
-        echo "- **KernelSU:** ${{ inputs.kernelsu_tag }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **KernelSU:** ${{ inputs.kernelsu_variant }} (${{ inputs.kernelsu_tag }})" >> $GITHUB_STEP_SUMMARY
         echo "- **SUSFS:** ${{ inputs.susfs_repo }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Output:** $KERNEL_ZIP" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
