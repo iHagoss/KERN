@@ -1,50 +1,36 @@
-name: Import Latest Release from Upstream
+name: Import SUSFS from GitLab
 
 on:
   workflow_dispatch:
 
 jobs:
-  import-release:
+  sync:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout your repo
-        uses: actions/checkout@v4
+      - name: Checkout GitHub repo
+        uses: actions/checkout@v3
+        with:
+          path: github-repo
 
-      - name: Download and extract latest release
+      - name: Clone GitLab repo
         run: |
-          curl -L -o latest.zip https://github.com/ExtremeXT/M62-backport/archive/refs/tags/latest.zip
-          unzip latest.zip
-          rm latest.zip
-          shopt -s extglob
-          mv M62-backport-*/*!(".github") . || true
+          git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git gitlab-susfs
+          if [ ! -d "gitlab-susfs" ]; then
+            echo "❌ GitLab repo failed to clone. Exiting."
+            exit 1
+          fi
+          # Remove everything except .github and .git
+          find github-repo -mindepth 1 ! -regex '^github-repo/\.git\(/.*\)?' ! -regex '^github-repo/\.github\(/.*\)?' -exec rm -rf {} +
+          cp -a gitlab-susfs/. github-repo/
 
-      - name: Configure Git identity
+      - name: Force Push to GitHub
+        env:
+          GH_PUSH_TOKEN: ${{ secrets.GH_PUSH_TOKEN }}
         run: |
-          git config --global user.name "iHagoss"
-          git config --global user.email "178996594+iHagoss@users.noreply.github.com"
-
-      - name: Commit only if there are changes
-        run: |
+          cd github-repo
+          git config user.name "iHagoss"
+          git config user.email "ihagoss@users.noreply.github.com"
           git add .
-          git diff --cached --quiet && echo "No changes to commit." || git commit -m "Import latest release from ExtremeXT/M62-backport"
-
-      - name: Pull latest changes before push
-        env:
-          TOKEN: ${{ secrets.GH_PUSH_TOKEN }}
-        run: |
-          git remote set-url origin https://x-access-token:${TOKEN}@github.com/iHagoss/KERN.git
-          git config --global credential.helper ""
-          git pull origin main --rebase
-
-      - name: Push using secure token
-        env:
-          TOKEN: ${{ secrets.GH_PUSH_TOKEN }}
-        run: |
-          git push origin HEAD:main
-
-      - name: Debug Git Setup (optional)
-        run: |
-          git remote -v
-          git config --get user.name
-          git config --get user.email
+          git commit -m "Force sync from GitLab susfs4ksu" || echo "No changes to commit"
+          git push --force https://iHagoss:${GH_PUSH_TOKEN}@github.com/iHagoss/SUSFS.git HEAD:main
