@@ -1,3 +1,9 @@
+# Complete KernelSU Build Guide for Beyond2LTE (Exynos 9820)
+
+# ✅ Device: Beyond2LTE (NOT 5G) - Exynos 9820
+# ✅ Samsung Galaxy s10+ (G975f)
+# ✅ Target ROM: Extreme Nexus ROM
+
 name: Build KernelSU for Beyond2LTE
 
 on:
@@ -82,31 +88,132 @@ jobs:
         mkdir -p ~/toolchain
         cd ~/toolchain
         
-        # Download prebuilt Clang
-        wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r487747c.tar.gz
-        mkdir clang
-        tar -xzf clang-r487747c.tar.gz -C clang
+        # Download AOSP Clang (more reliable)
+        echo "Downloading Clang toolchain..."
+        wget -q --timeout=30 --tries=3 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r487747c.tar.gz -O clang.tar.gz
         
-        # Download GCC cross compiler
-        wget -q https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/heads/main.tar.gz
-        mkdir gcc-aarch64
-        tar -xzf main.tar.gz -C gcc-aarch64
+        if [ ! -f clang.tar.gz ]; then
+          echo "Primary clang download failed, trying alternative..."
+          wget -q --timeout=30 --tries=3 https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04.tar.xz -O clang.tar.xz
+          mkdir clang
+          tar -xf clang.tar.xz --strip-components=1 -C clang
+        else
+          mkdir clang
+          tar -xzf clang.tar.gz -C clang
+        fi
         
-        # Download GCC arm compiler
-        wget -q https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/heads/main.tar.gz
-        mkdir gcc-arm
-        tar -xzf main.tar.gz -C gcc-arm
+        # Download GCC cross compilers from reliable mirror
+        echo "Downloading GCC aarch64 toolchain..."
+        wget -q --timeout=30 --tries=3 https://releases.linaro.org/components/toolchain/binaries/latest-7/aarch64-linux-gnu/gcc-linaro-7.5.0-2019.12-x86_64_aarch64-linux-gnu.tar.xz -O gcc-aarch64.tar.xz
         
-        # Set permissions
-        chmod +x ~/toolchain/clang/bin/*
-        chmod +x ~/toolchain/gcc-aarch64/bin/*
-        chmod +x ~/toolchain/gcc-arm/bin/*
+        if [ ! -f gcc-aarch64.tar.xz ]; then
+          echo "Linaro download failed, using system gcc..."
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          mkdir -p gcc-aarch64/bin
+          ln -s /usr/bin/aarch64-linux-gnu-gcc gcc-aarch64/bin/aarch64-linux-android-gcc
+          ln -s /usr/bin/aarch64-linux-gnu-g++ gcc-aarch64/bin/aarch64-linux-android-g++
+          ln -s /usr/bin/aarch64-linux-gnu-ar gcc-aarch64/bin/aarch64-linux-android-ar
+          ln -s /usr/bin/aarch64-linux-gnu-as gcc-aarch64/bin/aarch64-linux-android-as
+          ln -s /usr/bin/aarch64-linux-gnu-ld gcc-aarch64/bin/aarch64-linux-android-ld
+          ln -s /usr/bin/aarch64-linux-gnu-strip gcc-aarch64/bin/aarch64-linux-android-strip
+          ln -s /usr/bin/aarch64-linux-gnu-objcopy gcc-aarch64/bin/aarch64-linux-android-objcopy
+          ln -s /usr/bin/aarch64-linux-gnu-objdump gcc-aarch64/bin/aarch64-linux-android-objdump
+          ln -s /usr/bin/aarch64-linux-gnu-nm gcc-aarch64/bin/aarch64-linux-android-nm
+          ln -s /usr/bin/aarch64-linux-gnu-ranlib gcc-aarch64/bin/aarch64-linux-android-ranlib
+        else
+          mkdir gcc-aarch64
+          tar -xf gcc-aarch64.tar.xz --strip-components=1 -C gcc-aarch64
+          # Create android-specific symlinks
+          cd gcc-aarch64/bin
+          for tool in gcc g++ ar as ld strip objcopy objdump nm ranlib; do
+            if [ -f "aarch64-linux-gnu-$tool" ]; then
+              ln -sf "aarch64-linux-gnu-$tool" "aarch64-linux-android-$tool"
+            fi
+          done
+          cd ~/toolchain
+        fi
+        
+        # Download ARM32 GCC
+        echo "Downloading GCC arm toolchain..."
+        wget -q --timeout=30 --tries=3 https://releases.linaro.org/components/toolchain/binaries/latest-7/arm-linux-gnueabihf/gcc-linaro-7.5.0-2019.12-x86_64_arm-linux-gnueabihf.tar.xz -O gcc-arm.tar.xz
+        
+        if [ ! -f gcc-arm.tar.xz ]; then
+          echo "Linaro ARM download failed, using system gcc..."
+          sudo apt-get install -y gcc-arm-linux-gnueabihf
+          mkdir -p gcc-arm/bin
+          ln -s /usr/bin/arm-linux-gnueabihf-gcc gcc-arm/bin/arm-linux-androideabi-gcc
+          ln -s /usr/bin/arm-linux-gnueabihf-g++ gcc-arm/bin/arm-linux-androideabi-g++
+          ln -s /usr/bin/arm-linux-gnueabihf-ar gcc-arm/bin/arm-linux-androideabi-ar
+          ln -s /usr/bin/arm-linux-gnueabihf-as gcc-arm/bin/arm-linux-androideabi-as
+          ln -s /usr/bin/arm-linux-gnueabihf-ld gcc-arm/bin/arm-linux-androideabi-ld
+          ln -s /usr/bin/arm-linux-gnueabihf-strip gcc-arm/bin/arm-linux-androideabi-strip
+          ln -s /usr/bin/arm-linux-gnueabihf-objcopy gcc-arm/bin/arm-linux-androideabi-objcopy
+          ln -s /usr/bin/arm-linux-gnueabihf-objdump gcc-arm/bin/arm-linux-androideabi-objdump
+          ln -s /usr/bin/arm-linux-gnueabihf-nm gcc-arm/bin/arm-linux-androideabi-nm
+          ln -s /usr/bin/arm-linux-gnueabihf-ranlib gcc-arm/bin/arm-linux-androideabi-ranlib
+        else
+          mkdir gcc-arm
+          tar -xf gcc-arm.tar.xz --strip-components=1 -C gcc-arm
+          # Create android-specific symlinks
+          cd gcc-arm/bin
+          for tool in gcc g++ ar as ld strip objcopy objdump nm ranlib; do
+            if [ -f "arm-linux-gnueabihf-$tool" ]; then
+              ln -sf "arm-linux-gnueabihf-$tool" "arm-linux-androideabi-$tool"
+            fi
+          done
+          cd ~/toolchain
+        fi
+        
+        # Verify toolchain
+        echo "Verifying toolchain setup..."
+        ls -la ~/toolchain/
+        
+        # Make sure clang exists
+        if [ -f ~/toolchain/clang/bin/clang ]; then
+          echo "✅ Clang found"
+          ~/toolchain/clang/bin/clang --version
+        else
+          echo "❌ Clang not found, using system clang"
+          which clang
+        fi
+        
+        # Check GCC
+        if [ -f ~/toolchain/gcc-aarch64/bin/aarch64-linux-android-gcc ]; then
+          echo "✅ GCC aarch64 found"
+          ~/toolchain/gcc-aarch64/bin/aarch64-linux-android-gcc --version
+        else
+          echo "❌ GCC aarch64 not found"
+        fi
+        
+        if [ -f ~/toolchain/gcc-arm/bin/arm-linux-androideabi-gcc ]; then
+          echo "✅ GCC arm found"
+          ~/toolchain/gcc-arm/bin/arm-linux-androideabi-gcc --version
+        else
+          echo "❌ GCC arm not found"
+        fi
 
     - name: Setup PATH
       run: |
-        echo "$HOME/toolchain/clang/bin" >> $GITHUB_PATH
-        echo "$HOME/toolchain/gcc-aarch64/bin" >> $GITHUB_PATH
-        echo "$HOME/toolchain/gcc-arm/bin" >> $GITHUB_PATH
+        # Add toolchain to PATH with fallbacks
+        if [ -d ~/toolchain/clang/bin ]; then
+          echo "$HOME/toolchain/clang/bin" >> $GITHUB_PATH
+        fi
+        if [ -d ~/toolchain/gcc-aarch64/bin ]; then
+          echo "$HOME/toolchain/gcc-aarch64/bin" >> $GITHUB_PATH
+        fi
+        if [ -d ~/toolchain/gcc-arm/bin ]; then
+          echo "$HOME/toolchain/gcc-arm/bin" >> $GITHUB_PATH
+        fi
+        
+        # Verify PATH setup
+        echo "Current PATH:"
+        echo $PATH
+        
+        # Test compilers
+        echo "Testing compilers..."
+        which clang || echo "clang not in PATH"
+        which aarch64-linux-android-gcc || echo "aarch64-linux-android-gcc not in PATH"
+        which arm-linux-androideabi-gcc || echo "arm-linux-androideabi-gcc not in PATH"
 
     - name: Clone KernelSU
       run: |
