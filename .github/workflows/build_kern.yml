@@ -37,7 +37,7 @@ jobs:
     - name: Checkout kernel source
       uses: actions/checkout@v4
       with:
-token: ${{ secrets.GH_PUSH_TOKEN }}
+        token: ${{ secrets.GH_PUSH_TOKEN }}
         fetch-depth: 0
         submodules: recursive
 
