@@ -45,7 +45,7 @@ env:
   ARCH: arm64
   SUBARCH: arm64
   DEVICE: ${{ inputs.device }}
-  DEFCONFIG: ${{ inputs.device }}_defconfig
+  # DEFCONFIG will be set dynamically in the "Find and prepare defconfig" step
   KERNEL_NAME: ExtremeKRNL-Nexus-KernelSU
   CLANG_VERSION: "18.0.0"
   BUILD_USER: iHagoss
@@ -181,43 +181,46 @@ jobs:
         fi
         
         # Find KernelSU kernel files - they might be in different locations
+        # Copy KernelSU files to the root of the kernel source tree
+        KERNELSU_SOURCE_DIR=""
         if [ -d "KernelSU/kernel" ]; then
-          echo "✅ Found KernelSU kernel directory"
-          # Copy KernelSU kernel files
+          echo "✅ Found KernelSU kernel directory: KernelSU/kernel"
           cp -r KernelSU/kernel/* ./
-          KERNELSU_PATH="KernelSU/kernel"
+          KERNELSU_SOURCE_DIR="KernelSU/kernel" # Store original path for later reference if needed
         elif [ -d "KernelSU/ksu" ]; then
-          echo "✅ Found KernelSU ksu directory"
-          # Some versions might have files in ksu directory
+          echo "✅ Found KernelSU ksu directory: KernelSU/ksu"
           cp -r KernelSU/ksu/* ./
-          KERNELSU_PATH="KernelSU/ksu"
+          KERNELSU_SOURCE_DIR="KernelSU/ksu"
         else
-          echo "❌ KernelSU kernel files not found in expected locations"
+          echo "❌ KernelSU kernel files not found in expected locations (KernelSU/kernel or KernelSU/ksu)"
           echo "Available directories in KernelSU:"
           find KernelSU -type d -maxdepth 2
           exit 1
         fi
         
-        # Backup original fs/exec.c if it exists
-        if [ -f fs/exec.c ]; then
-          cp fs/exec.c fs/exec.c.backup
-          echo "✅ Backed up original fs/exec.c"
-        fi
-        
-        # Run KernelSU setup script if it exists
-        if [ -f "$KERNELSU_PATH/setup.sh" ]; then
-          echo "✅ Found KernelSU setup script, running it..."
-          chmod +x "$KERNELSU_PATH/setup.sh"
-          bash "$KERNELSU_PATH/setup.sh"
+        # Run KernelSU setup script if it exists, assuming it's now copied to the kernel root
+        # and expects to run from there, using relative paths.
+        if [ -f "setup.sh" ]; then
+          echo "✅ Found KernelSU setup script (copied to kernel root), running it..."
+          chmod +x setup.sh
+          bash setup.sh
+        elif [ -f "$KERNELSU_SOURCE_DIR/setup.sh" ]; then
+          # Fallback: if setup.sh wasn't copied, but exists in the original cloned dir
+          # This case is less ideal as it might cause pathing issues, but we try.
+          echo "⚠️  KernelSU setup script not copied to kernel root, running from original cloned dir: $KERNELSU_SOURCE_DIR/setup.sh"
+          chmod +x "$KERNELSU_SOURCE_DIR/setup.sh"
+          bash "$KERNELSU_SOURCE_DIR/setup.sh"
         else
-          echo "⚠️  KernelSU setup script not found, manual integration may be needed"
+          echo "⚠️  KernelSU setup script not found in expected locations after copy. Manual integration may be needed or setup.sh is not applicable."
         fi
         
-        # Verify KernelSU integration
+        # Verify KernelSU integration files. These files should now exist in the kernel root.
         if [ -f "ksu.c" ] || [ -f "kernel/ksu.c" ] || [ -d "KernelSU" ]; then
-          echo "✅ KernelSU integration appears successful"
+          echo "✅ KernelSU integration files appear successful (ksu.c or KernelSU dir exists in root)."
         else
-          echo "⚠️  KernelSU integration verification failed"
+          echo "⚠️  KernelSU integration verification failed: ksu.c not found in kernel root."
+          # Optionally exit here if integration is critical and definitely failed.
+          # exit 1 
         fi
 
     - name: Integrate SUSFS
@@ -230,33 +233,42 @@ jobs:
           exit 1
         fi
         
-        # Try different SUSFS integration methods
         SUSFS_INTEGRATED=false
+        SUSFS_SOURCE_DIR=""
         
-        # Method 1: Look for kernel_patches directory
+        # Method 1: Look for kernel_patches directory and copy contents
         if [ -d "susfs/kernel_patches" ]; then
-          echo "✅ Found SUSFS kernel_patches directory"
+          echo "✅ Found SUSFS kernel_patches directory: susfs/kernel_patches"
           cp -r susfs/kernel_patches/* ./
           SUSFS_INTEGRATED=true
+          SUSFS_SOURCE_DIR="susfs/kernel_patches"
         fi
         
-        # Method 2: Look for direct kernel files
+        # Method 2: Look for direct kernel files and copy contents
         if [ -d "susfs/kernel" ]; then
-          echo "✅ Found SUSFS kernel directory"
+          echo "✅ Found SUSFS kernel directory: susfs/kernel"
           cp -r susfs/kernel/* ./
           SUSFS_INTEGRATED=true
+          SUSFS_SOURCE_DIR="susfs/kernel"
         fi
         
-        # Method 3: Look for setup script in different locations
-        for setup_script in "susfs/setup.sh" "susfs/kernel_patches/setup.sh" "susfs/kernel/setup.sh"; do
-          if [ -f "$setup_script" ]; then
-            echo "✅ Found SUSFS setup script: $setup_script"
-            chmod +x "$setup_script"
-            bash "$setup_script"
-            SUSFS_INTEGRATED=true
-            break
-          fi
-        done
+        # Run SUSFS setup script if it exists, assuming it's now copied to the kernel root
+        # or can operate on the kernel root from its original cloned location.
+        if [ -f "susfs_setup.sh" ]; then # Check for a setup script specifically named for SUSFS if copied
+            echo "✅ Found SUSFS setup script (copied to kernel root), running it..."
+            chmod +x susfs_setup.sh
+            bash susfs_setup.sh
+        elif [ -f "$SUSFS_SOURCE_DIR/setup.sh" ]; then # Check original cloned path
+          echo "✅ Found SUSFS setup script in cloned dir: $SUSFS_SOURCE_DIR/setup.sh, running it..."
+          chmod +x "$SUSFS_SOURCE_DIR/setup.sh"
+          bash "$SUSFS_SOURCE_DIR/setup.sh"
+          SUSFS_INTEGRATED=true
+        elif [ -f "susfs/setup.sh" ]; then # Check the root of the cloned susfs repo
+          echo "✅ Found SUSFS setup script in susfs/setup.sh, running it..."
+          chmod +x "susfs/setup.sh"
+          bash "susfs/setup.sh"
+          SUSFS_INTEGRATED=true
+        fi
         
         if [ "$SUSFS_INTEGRATED" = false ]; then
           echo "⚠️  SUSFS integration method not found, but continuing..."
@@ -265,6 +277,13 @@ jobs:
         else
           echo "✅ SUSFS integration completed"
         fi
+        # Add a check for a known SUSFS file to verify success if possible.
+        if [ -f "susfs.c" ] || grep -q "CONFIG_KSU_SUSFS" Kconfig 2>/dev/null; then # Example check
+            echo "✅ SUSFS files/configs appear integrated."
+        else
+            echo "⚠️  SUSFS integration verification failed (no common SUSFS file/config found)."
+        fi
+
 
     - name: Find and prepare defconfig
       run: |
@@ -276,10 +295,11 @@ jobs:
         
         # Try different defconfig names in order of preference
         DEFCONFIG_FOUND=false
+        SELECTED_DEFCONFIG=""
         for config in ${{ inputs.device }}_defconfig ${DEVICE}_defconfig beyond2lte_defconfig beyond_defconfig exynos9820-beyond2lte_defconfig exynos9820_defconfig; do
           if [ -f "arch/arm64/configs/$config" ]; then
             echo "✅ Found defconfig: $config"
-            echo "DEFCONFIG=$config" >> $GITHUB_ENV
+            SELECTED_DEFCONFIG="$config"
             DEFCONFIG_FOUND=true
             break
           fi
@@ -289,17 +309,15 @@ jobs:
         if [ "$DEFCONFIG_FOUND" = false ]; then
           FOUND_CONFIG=$(find arch/arm64/configs -name "*${{ inputs.device }}*" | head -1)
           if [ -n "$FOUND_CONFIG" ]; then
-            DEFCONFIG=$(basename "$FOUND_CONFIG")
-            echo "✅ Using fallback defconfig: $DEFCONFIG"
-            echo "DEFCONFIG=$DEFCONFIG" >> $GITHUB_ENV
+            SELECTED_DEFCONFIG=$(basename "$FOUND_CONFIG")
+            echo "✅ Using fallback defconfig: $SELECTED_DEFCONFIG"
             DEFCONFIG_FOUND=true
           else
             # Last resort - try beyond configs
             FOUND_CONFIG=$(find arch/arm64/configs -name "*beyond*" | head -1)
             if [ -n "$FOUND_CONFIG" ]; then
-              DEFCONFIG=$(basename "$FOUND_CONFIG")
-              echo "✅ Using beyond fallback defconfig: $DEFCONFIG"
-              echo "DEFCONFIG=$DEFCONFIG" >> $GITHUB_ENV
+              SELECTED_DEFCONFIG=$(basename "$FOUND_CONFIG")
+              echo "✅ Using beyond fallback defconfig: $SELECTED_DEFCONFIG"
               DEFCONFIG_FOUND=true
             fi
           fi
@@ -310,11 +328,13 @@ jobs:
           echo "Available defconfigs in arch/arm64/configs:"
           ls -la arch/arm64/configs/ | grep -E "(beyond|exynos|${{ inputs.device }})"
           exit 1
+        else
+          echo "DEFCONFIG=$SELECTED_DEFCONFIG" >> $GITHUB_ENV # Set environment variable for subsequent steps
         fi
 
     - name: Configure kernel
       run: |
-        echo "Configuring kernel with defconfig: $DEFCONFIG"
+        echo "Configuring kernel with defconfig: ${{ env.DEFCONFIG }}" # Use env.DEFCONFIG
         
         # Ensure we have a Makefile for clean
         if [ ! -f Makefile ]; then
@@ -324,40 +344,64 @@ jobs:
         fi
         
         # Clean previous builds if targets exist
-        if make -n clean >/dev/null 2>&1; then
-          make clean
-        fi
-        if make -n mrproper >/dev/null 2>&1; then
-          make mrproper
-        fi
+        make clean || true # Use || true to prevent job failure if clean/mrproper don't exist
+        make mrproper || true
         
         # Configure with defconfig
-        make CC=clang ARCH=$ARCH SUBARCH=$SUBARCH CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi- CLANG_TRIPLE=aarch64-linux-gnu- $DEFCONFIG
+        # The correct way to apply a defconfig is 'make <defconfig_name>'
+        make CC=clang ARCH=$ARCH SUBARCH=$SUBARCH CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi- CLANG_TRIPLE=aarch64-linux-gnu- ${{ env.DEFCONFIG }}
         
-        # Enable KernelSU
+        # Ensure .config exists after running defconfig
+        if [ ! -f .config ]; then
+            echo "❌ .config file was not created after running defconfig. Kernel configuration failed."
+            exit 1
+        fi
+
+        echo "Current .config content before KSU/SUSFS additions:"
+        cat .config | grep -E "CONFIG_KSU|CONFIG_KSU_SUSFS" || true # Show existing KSU/SUSFS lines
+
+        # Enable KernelSU by appending to .config
         echo "CONFIG_KSU=y" >> .config
         echo "CONFIG_KSU_DEBUG=n" >> .config
         
-        # Enable SUSFS if available
-        if grep -q "CONFIG_KSU_SUSFS" arch/arm64/configs/$DEFCONFIG 2>/dev/null; then
-          echo "✅ Enabling SUSFS support"
+        # Enable SUSFS if its config options are generally known or expected in the defconfig.
+        # It's safer to check the *Kconfig* files or the defconfig for explicit support before adding.
+        # A more robust check might be `grep -q "CONFIG_KSU_SUSFS" Kconfig` if SUSFS adds its own Kconfig entries.
+        if grep -q "CONFIG_KSU_SUSFS" arch/arm64/configs/${{ env.DEFCONFIG }} 2>/dev/null || \
+           grep -q "CONFIG_KSU_SUSFS" Kconfig 2>/dev/null; then # Check both defconfig and Kconfig for SUSFS entry
+          echo "✅ Enabling SUSFS support in .config"
           echo "CONFIG_KSU_SUSFS=y" >> .config
           echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> .config
           echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y" >> .config
           echo "CONFIG_KSU_SUSFS_SUS_OVERLAYFS=y" >> .config
         else
-          echo "⚠️  SUSFS config options not found in defconfig"
+          echo "⚠️  SUSFS config options not found in defconfig or Kconfig. Skipping SUSFS config injection."
+          # Optionally ensure they are off if not found, to prevent build issues from unwanted configs
+          sed -i '/CONFIG_KSU_SUSFS/d' .config
+          sed -i '/CONFIG_KSU_SUSFS_SUS_MOUNT/d' .config
+          sed -i '/CONFIG_KSU_SUSFS_SUS_KSTAT/d' .config
+          sed -i '/CONFIG_KSU_SUSFS_SUS_OVERLAYFS/d' .config
         fi
         
-        # Regenerate config
+        # Regenerate config to pick up manual changes and resolve dependencies
+        # This is crucial after modifying .config directly
+        echo "Running olddefconfig to reconcile .config"
         make CC=clang ARCH=$ARCH SUBARCH=$SUBARCH CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi- CLANG_TRIPLE=aarch64-linux-gnu- olddefconfig
         
-        # Verify KernelSU is enabled
+        # Verify KernelSU is enabled in the final .config
         if grep -q "CONFIG_KSU=y" .config; then
-          echo "✅ KernelSU enabled in config"
+          echo "✅ KernelSU enabled in final .config"
         else
-          echo "⚠️  KernelSU not found in final config"
+          echo "❌ KernelSU not found in final .config. Build might fail."
+          exit 1 # Fail fast if KSU is not enabled after configuration
         fi
+        # Verify SUSFS is enabled if it was supposed to be
+        if grep -q "CONFIG_KSU_SUSFS=y" .config; then
+            echo "✅ SUSFS enabled in final .config"
+        fi
+        
+        echo "Final .config snippet:"
+        cat .config | grep -E "CONFIG_KSU|CONFIG_KSU_SUSFS" || true
 
     - name: Build kernel
       run: |
@@ -390,8 +434,10 @@ jobs:
           echo "Last 100 lines of build log:"
           tail -100 build.log
           echo ""
-          echo "Error summary:"
+          echo "Error summary (last 20 lines with 'error' keyword):"
           grep -i error build.log | tail -20
+          echo "Warning summary (last 20 lines with 'warning' keyword):"
+          grep -i warning build.log | tail -20
           exit 1
         fi
 
@@ -427,11 +473,8 @@ jobs:
 
     - name: Create flashable zip
       run: |
-        cd output
-        
-        # Create AnyKernel3 structure
-        mkdir -p anykernel3
-        cd anykernel3
+        mkdir -p output/anykernel3_temp # Create a temporary directory for AnyKernel3
+        cd output/anykernel3_temp
         
         # Download AnyKernel3
         echo "Downloading AnyKernel3..."
@@ -441,6 +484,7 @@ jobs:
         rm -rf AnyKernel3-master master.zip
         
         # Configure AnyKernel3 for selected device
+        # Use single quotes for the EOF block to prevent shell variable expansion prematurely
         cat > anykernel.sh << 'EOF'
         # AnyKernel3 Ramdisk Mod Script
         # osm0sis @ xda-developers
@@ -454,7 +498,7 @@ jobs:
         do.systemless=1
         do.cleanup=1
         do.cleanuponabort=0
-        device.name1=${{ inputs.device }}
+        device.name1=${{ env.DEVICE }} # Use env.DEVICE here
         device.name2=beyond2lte
         device.name3=SM-G975F
         device.name4=beyond1lte
@@ -482,15 +526,16 @@ jobs:
         write_boot;
         EOF
         
-        # Copy kernel image
+        # Copy kernel image from parent directory
         cp ../Image .
         
-        # Create zip
-        zip -r ../$KERNEL_ZIP * -x "*.git*" "*.md" "*.txt"
+        # Create zip in the parent directory (output/)
+        zip -r ../${{ env.KERNEL_ZIP }} * -x "*.git*" "*.md" "*.txt"
         
-        cd ..
-        echo "✅ Flashable zip created: $KERNEL_ZIP"
-        ls -la $KERNEL_ZIP
+        cd ../.. # Go back to the root of the repo
+        rm -rf output/anykernel3_temp # Clean up temporary AnyKernel3 directory
+        echo "✅ Flashable zip created: output/${{ env.KERNEL_ZIP }}"
+        ls -la output/${{ env.KERNEL_ZIP }}
 
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
