@@ -19,7 +19,7 @@ on:
           - 'https://github.com/simonpunk/susfs4ksu.git'
 
 env:
-  TOKEN: ${{ secrets.GH_PUSH_TOKEN }}
+  GITHUB_TOKEN: ${{ secrets.GH_PUSH_TOKEN }}
   ARCH: arm64
   SUBARCH: arm64
   DEVICE: beyond2lte
@@ -37,7 +37,7 @@ jobs:
     - name: Checkout kernel source
       uses: actions/checkout@v4
       with:
-        token: ${{ env.TOKEN }}
+token: ${{ secrets.GH_PUSH_TOKEN }}
         fetch-depth: 0
         submodules: recursive
 
@@ -352,7 +352,7 @@ jobs:
         files: |
           output/${{ env.KERNEL_ZIP }}
           output/build_info.txt
-        token: ${{ env.TOKEN }}
+        token: ${{ secrets.GH_PUSH_TOKEN }}
 
     - name: Build summary
       run: |
