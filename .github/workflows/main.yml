@@ -15,7 +15,7 @@ jobs:
 
       - name: Clone GitLab repo
         run: |
-          git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git gitlab-susfs
+          git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu/-/tree/30e66dc3a5c65954de865afd8f44682866887544/ gitlab-susfs
           if [ ! -d "gitlab-susfs" ]; then
             echo "❌ GitLab repo failed to clone. Exiting."
             exit 1
