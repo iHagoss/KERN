@@ -65,6 +65,7 @@ jobs:
 
     - name: Setup build environment
       run: |
+        echo "Updating apt and installing build dependencies..."
         sudo apt-get update
         sudo apt-get install -y \
           build-essential \
@@ -86,6 +87,7 @@ jobs:
           llvm \
           gcc-aarch64-linux-gnu \
           gcc-arm-linux-gnueabihf
+        echo "Build environment setup complete."
 
     - name: Setup ccache
       uses: actions/cache@v4
@@ -94,15 +96,21 @@ jobs:
         key: ccache-${{ env.DEVICE }}-${{ github.sha }}
         restore-keys: |
           ccache-${{ env.DEVICE }}-
+      env:
+        CCACHE_DIR: ~/.ccache # Ensure ccache uses this path for the cache action
 
     - name: Configure ccache
       run: |
+        echo "Configuring ccache..."
         ccache --set-config=max_size=2G
         ccache --set-config=compression=true
         ccache --zero-stats
+        ccache --show-config
+        echo "ccache configured."
 
     - name: Setup toolchain symlinks
       run: |
+        echo "Setting up toolchain symlinks..."
         sudo mkdir -p /usr/local/bin
         
         # Create Android-specific symlinks for aarch64
@@ -144,12 +152,11 @@ jobs:
         echo "Using tag: ${{ inputs.kernelsu_tag }}"
         
         if [ "${{ inputs.kernelsu_variant }}" == "KernelSU-Next" ]; then
-          git clone --depth=1 --branch ${{ inputs.kernelsu_tag }} https://github.com/KernelSU-Next/KernelSU-Next.git KernelSU
+          git clone --depth=1 --branch ${{ inputs.kernelsu_tag }} https://github.com/KernelSU-Next/KernelSU-Next.git KernelSU || { echo "❌ Failed to clone KernelSU-Next!"; exit 1; }
         else
-          git clone --depth=1 --branch ${{ inputs.kernelsu_tag }} https://github.com/tiann/KernelSU.git KernelSU
+          git clone --depth=1 --branch ${{ inputs.kernelsu_tag }} https://github.com/tiann/KernelSU.git KernelSU || { echo "❌ Failed to clone KernelSU!"; exit 1; }
         fi
         
-        # Debug: Check what was cloned
         echo "KernelSU directory contents:"
         ls -la KernelSU/
         if [ -d "KernelSU/kernel" ]; then
@@ -160,9 +167,8 @@ jobs:
     - name: Clone SUSFS
       run: |
         echo "Cloning SUSFS from: ${{ inputs.susfs_repo }}"
-        git clone --depth=1 ${{ inputs.susfs_repo }} susfs
+        git clone --depth=1 ${{ inputs.susfs_repo }} susfs || { echo "❌ Failed to clone SUSFS!"; exit 1; }
         
-        # Debug: Check what was cloned
         echo "SUSFS directory contents:"
         ls -la susfs/
         if [ -d "susfs/kernel_patches" ]; then
@@ -174,126 +180,130 @@ jobs:
       run: |
         echo "Integrating KernelSU..."
         
-        # Check if KernelSU directory exists and has content
         if [ ! -d "KernelSU" ]; then
           echo "❌ KernelSU directory not found!"
           exit 1
         fi
         
-        # Find KernelSU kernel files - they might be in different locations
-        # Copy KernelSU files to the root of the kernel source tree
-        KERNELSU_SOURCE_DIR=""
+        KERNELSU_SOURCE_ROOT_IN_CLONE=""
         if [ -d "KernelSU/kernel" ]; then
+          KERNELSU_SOURCE_ROOT_IN_CLONE="KernelSU/kernel"
           echo "✅ Found KernelSU kernel directory: KernelSU/kernel"
-          cp -r KernelSU/kernel/* ./
-          KERNELSU_SOURCE_DIR="KernelSU/kernel" # Store original path for later reference if needed
         elif [ -d "KernelSU/ksu" ]; then
+          KERNELSU_SOURCE_ROOT_IN_CLONE="KernelSU/ksu"
           echo "✅ Found KernelSU ksu directory: KernelSU/ksu"
-          cp -r KernelSU/ksu/* ./
-          KERNELSU_SOURCE_DIR="KernelSU/ksu"
         else
-          echo "❌ KernelSU kernel files not found in expected locations (KernelSU/kernel or KernelSU/ksu)"
-          echo "Available directories in KernelSU:"
-          find KernelSU -type d -maxdepth 2
+          echo "❌ KernelSU kernel files not found in expected locations (KernelSU/kernel or KernelSU/ksu) inside KernelSU clone!"
+          echo "Listing contents of KernelSU directory:"
+          ls -R KernelSU || true
           exit 1
         fi
+
+        echo "Attempting to copy KernelSU files from '$KERNELSU_SOURCE_ROOT_IN_CLONE' to kernel source root (current directory)..."
+        cp -r "$KERNELSU_SOURCE_ROOT_IN_CLONE"/* ./ || { echo "❌ Failed to copy KernelSU files! This is critical."; exit 1; }
+        echo "Contents of kernel root after KernelSU copy (showing relevant files/dirs):"
+        ls -l ksu.c fs/ security/include/ include/linux/ || true # Check for key files copied
+        find . -maxdepth 3 -name "*ksu*" -o -name "setup.sh" -o -name "Kconfig" || true # More broad search
         
-        # Run KernelSU setup script if it exists, assuming it's now copied to the kernel root
-        # and expects to run from there, using relative paths.
+        # Check for setup.sh in the current directory (kernel root)
         if [ -f "setup.sh" ]; then
-          echo "✅ Found KernelSU setup script (copied to kernel root), running it..."
-          chmod +x setup.sh
-          bash setup.sh
-        elif [ -f "$KERNELSU_SOURCE_DIR/setup.sh" ]; then
-          # Fallback: if setup.sh wasn't copied, but exists in the original cloned dir
-          # This case is less ideal as it might cause pathing issues, but we try.
-          echo "⚠️  KernelSU setup script not copied to kernel root, running from original cloned dir: $KERNELSU_SOURCE_DIR/setup.sh"
-          chmod +x "$KERNELSU_SOURCE_DIR/setup.sh"
-          bash "$KERNELSU_SOURCE_DIR/setup.sh"
+          echo "✅ Found KernelSU setup script (now in kernel root), running: bash ./setup.sh"
+          chmod +x ./setup.sh
+          # IMPORTANT: The KernelSU setup.sh often expects to be run FROM the kernel root
+          # and applies patches assuming relative paths. If it uses absolute paths, it will fail.
+          bash ./setup.sh || { echo "❌ KernelSU setup.sh failed during execution! This likely points to incorrect paths in the script itself."; exit 1; }
+        elif [ -f "$KERNELSU_SOURCE_ROOT_IN_CLONE/setup.sh" ]; then
+          echo "⚠️  KernelSU setup script not copied to kernel root, attempting to run from original cloned dir: $KERNELSU_SOURCE_ROOT_IN_CLONE/setup.sh"
+          echo "This might lead to pathing issues if setup.sh uses relative paths assuming kernel root."
+          chmod +x "$KERNELSU_SOURCE_ROOT_IN_CLONE/setup.sh"
+          bash "$KERNELSU_SOURCE_ROOT_IN_CLONE/setup.sh" || { echo "❌ KernelSU setup.sh failed from original path! This likely points to incorrect paths in the script itself."; exit 1; }
         else
-          echo "⚠️  KernelSU setup script not found in expected locations after copy. Manual integration may be needed or setup.sh is not applicable."
+          echo "⚠️  KernelSU setup script not found in expected locations after copy or in original dir. Proceeding without explicit setup.sh run for KernelSU. KernelSU might not be correctly integrated."
         fi
         
-        # Verify KernelSU integration files. These files should now exist in the kernel root.
-        if [ -f "ksu.c" ] || [ -f "kernel/ksu.c" ] || [ -d "KernelSU" ]; then
-          echo "✅ KernelSU integration files appear successful (ksu.c or KernelSU dir exists in root)."
+        # Verify KernelSU integration files after patching attempts
+        echo "Verifying KernelSU integration after setup/copy:"
+        if [ -f "ksu.c" ] || [ -f "kernel/ksu.c" ]; then
+          echo "✅ KernelSU core files (ksu.c) found in kernel root."
         else
-          echo "⚠️  KernelSU integration verification failed: ksu.c not found in kernel root."
-          # Optionally exit here if integration is critical and definitely failed.
-          # exit 1 
+          echo "❌ KernelSU core files (ksu.c) NOT found in kernel root. Integration likely failed. This is a critical error."
+          exit 1 # Fail if ksu.c is not in the kernel root
         fi
+        if grep -q "CONFIG_KSU" Kconfig 2>/dev/null; then
+            echo "✅ CONFIG_KSU entry found in Kconfig (post-integration check)."
+        else
+            echo "⚠️  CONFIG_KSU entry NOT found in Kconfig. This is unusual; KernelSU setup should add it. Build might fail."
+        fi
+        echo "Current directory contents around KernelSU problem areas:"
+        ls -l fs/ security/selinux/include/ include/linux/ || true
 
     - name: Integrate SUSFS
       run: |
         echo "Integrating SUSFS..."
         
-        # Check if SUSFS directory exists
         if [ ! -d "susfs" ]; then
           echo "❌ SUSFS directory not found!"
           exit 1
         fi
         
-        SUSFS_INTEGRATED=false
-        SUSFS_SOURCE_DIR=""
-        
-        # Method 1: Look for kernel_patches directory and copy contents
+        SUSFS_SOURCE_ROOT_IN_CLONE=""
+        # Try different SUSFS integration methods by copying contents to kernel root
         if [ -d "susfs/kernel_patches" ]; then
-          echo "✅ Found SUSFS kernel_patches directory: susfs/kernel_patches"
-          cp -r susfs/kernel_patches/* ./
-          SUSFS_INTEGRATED=true
-          SUSFS_SOURCE_DIR="susfs/kernel_patches"
+          SUSFS_SOURCE_ROOT_IN_CLONE="susfs/kernel_patches"
+          echo "✅ Found SUSFS kernel_patches directory: $SUSFS_SOURCE_ROOT_IN_CLONE"
+        elif [ -d "susfs/kernel" ]; then
+          SUSFS_SOURCE_ROOT_IN_CLONE="susfs/kernel"
+          echo "✅ Found SUSFS kernel directory: $SUSFS_SOURCE_ROOT_IN_CLONE"
+        else
+          echo "⚠️  No obvious SUSFS kernel content directory found inside susfs clone (expected susfs/kernel_patches or susfs/kernel)."
+          echo "Listing contents of susfs directory:"
+          ls -R susfs || true
+        fi
+
+        if [ -n "$SUSFS_SOURCE_ROOT_IN_CLONE" ]; then
+            echo "Attempting to copy SUSFS files from '$SUSFS_SOURCE_ROOT_IN_CLONE' to kernel source root (current directory)..."
+            cp -r "$SUSFS_SOURCE_ROOT_IN_CLONE"/* ./ || { echo "❌ Failed to copy SUSFS files!"; }
+            echo "Contents of kernel root after SUSFS copy (showing relevant files/dirs):"
+            ls -l susfs.c || true # Check for key files copied
+            find . -maxdepth 3 -name "*susfs*" -o -name "setup.sh" -o -name "Kconfig" || true # More broad search
         fi
         
-        # Method 2: Look for direct kernel files and copy contents
-        if [ -d "susfs/kernel" ]; then
-          echo "✅ Found SUSFS kernel directory: susfs/kernel"
-          cp -r susfs/kernel/* ./
-          SUSFS_INTEGRATED=true
-          SUSFS_SOURCE_DIR="susfs/kernel"
-        fi
-        
-        # Run SUSFS setup script if it exists, assuming it's now copied to the kernel root
-        # or can operate on the kernel root from its original cloned location.
-        if [ -f "susfs_setup.sh" ]; then # Check for a setup script specifically named for SUSFS if copied
-            echo "✅ Found SUSFS setup script (copied to kernel root), running it..."
-            chmod +x susfs_setup.sh
-            bash susfs_setup.sh
-        elif [ -f "$SUSFS_SOURCE_DIR/setup.sh" ]; then # Check original cloned path
-          echo "✅ Found SUSFS setup script in cloned dir: $SUSFS_SOURCE_DIR/setup.sh, running it..."
-          chmod +x "$SUSFS_SOURCE_DIR/setup.sh"
-          bash "$SUSFS_SOURCE_DIR/setup.sh"
-          SUSFS_INTEGRATED=true
+        # Run SUSFS setup script if it exists
+        if [ -f "setup.sh" ]; then # Check for setup.sh if it was copied directly to kernel root
+            echo "✅ Found SUSFS setup script (now in kernel root), running: bash ./setup.sh"
+            chmod +x ./setup.sh
+            bash ./setup.sh || { echo "❌ SUSFS setup.sh failed during execution!"; exit 1; }
+        elif [ -f "$SUSFS_SOURCE_ROOT_IN_CLONE/setup.sh" ]; then # Check original cloned path
+          echo "⚠️  SUSFS setup script not copied to kernel root, attempting to run from original cloned dir: $SUSFS_SOURCE_ROOT_IN_CLONE/setup.sh"
+          echo "This might lead to pathing issues if setup.sh expects to be in kernel root."
+          chmod +x "$SUSFS_SOURCE_ROOT_IN_CLONE/setup.sh"
+          bash "$SUSFS_SOURCE_ROOT_IN_CLONE/setup.sh" || { echo "❌ SUSFS setup.sh failed from original path!"; exit 1; }
         elif [ -f "susfs/setup.sh" ]; then # Check the root of the cloned susfs repo
-          echo "✅ Found SUSFS setup script in susfs/setup.sh, running it..."
+          echo "⚠️  SUSFS setup script found in susfs/setup.sh, running it from there. This might lead to pathing issues."
           chmod +x "susfs/setup.sh"
-          bash "susfs/setup.sh"
-          SUSFS_INTEGRATED=true
+          bash "susfs/setup.sh" || { echo "❌ SUSFS setup.sh failed from susfs/setup.sh!"; exit 1; }
+        else
+          echo "⚠️  SUSFS setup script not found in expected locations. Proceeding without explicit setup.sh run for SUSFS. SUSFS might not be correctly integrated."
         fi
         
-        if [ "$SUSFS_INTEGRATED" = false ]; then
-          echo "⚠️  SUSFS integration method not found, but continuing..."
-          echo "Available directories in susfs:"
-          find susfs -type d -maxdepth 2
+        # Verify SUSFS integration after patching attempts
+        echo "Verifying SUSFS integration after setup/copy:"
+        if [ -f "susfs.c" ] || grep -q "CONFIG_KSU_SUSFS" Kconfig 2>/dev/null || grep -q "CONFIG_KSU_SUSFS" .config 2>/dev/null; then
+            echo "✅ SUSFS files/configs appear integrated (susfs.c or CONFIG_KSU_SUSFS found)."
         else
-          echo "✅ SUSFS integration completed"
+            echo "⚠️  SUSFS integration verification failed (no common SUSFS file/config found). Continuing anyway."
         fi
-        # Add a check for a known SUSFS file to verify success if possible.
-        if [ -f "susfs.c" ] || grep -q "CONFIG_KSU_SUSFS" Kconfig 2>/dev/null; then # Example check
-            echo "✅ SUSFS files/configs appear integrated."
-        else
-            echo "⚠️  SUSFS integration verification failed (no common SUSFS file/config found)."
-        fi
+        echo "Current directory contents around SUSFS problem areas:"
+        ls -l fs/ security/selinux/include/ include/linux/ || true
 
 
     - name: Find and prepare defconfig
       run: |
         echo "Searching for defconfig files..."
         
-        # Search for defconfig files
         echo "Available defconfig files:"
         find arch/arm64/configs -name "*${{ inputs.device }}*" -o -name "*beyond*" -o -name "*exynos9820*" | head -10
         
-        # Try different defconfig names in order of preference
         DEFCONFIG_FOUND=false
         SELECTED_DEFCONFIG=""
         for config in ${{ inputs.device }}_defconfig ${DEVICE}_defconfig beyond2lte_defconfig beyond_defconfig exynos9820-beyond2lte_defconfig exynos9820_defconfig; do
@@ -305,7 +315,6 @@ jobs:
           fi
         done
         
-        # Fallback to any defconfig with device name in it
         if [ "$DEFCONFIG_FOUND" = false ]; then
           FOUND_CONFIG=$(find arch/arm64/configs -name "*${{ inputs.device }}*" | head -1)
           if [ -n "$FOUND_CONFIG" ]; then
@@ -313,7 +322,6 @@ jobs:
             echo "✅ Using fallback defconfig: $SELECTED_DEFCONFIG"
             DEFCONFIG_FOUND=true
           else
-            # Last resort - try beyond configs
             FOUND_CONFIG=$(find arch/arm64/configs -name "*beyond*" | head -1)
             if [ -n "$FOUND_CONFIG" ]; then
               SELECTED_DEFCONFIG=$(basename "$FOUND_CONFIG")
@@ -326,88 +334,85 @@ jobs:
         if [ "$DEFCONFIG_FOUND" = false ]; then
           echo "❌ No suitable defconfig found!"
           echo "Available defconfigs in arch/arm64/configs:"
-          ls -la arch/arm64/configs/ | grep -E "(beyond|exynos|${{ inputs.device }})"
+          ls -la arch/arm64/configs/ | grep -E "(beyond|exynos|${{ inputs.device }})" || true
           exit 1
         else
           echo "DEFCONFIG=$SELECTED_DEFCONFIG" >> $GITHUB_ENV # Set environment variable for subsequent steps
         fi
+        echo "Selected DEFCONFIG: ${{ env.DEFCONFIG }}"
 
     - name: Configure kernel
       run: |
-        echo "Configuring kernel with defconfig: ${{ env.DEFCONFIG }}" # Use env.DEFCONFIG
+        echo "Configuring kernel with defconfig: ${{ env.DEFCONFIG }}"
         
-        # Ensure we have a Makefile for clean
         if [ ! -f Makefile ]; then
-          echo "❌ No Makefile found!"
+          echo "❌ No Makefile found in current directory! This indicates a critical problem with kernel source checkout or prior integration steps."
           ls -la
           exit 1
         fi
         
-        # Clean previous builds if targets exist
-        make clean || true # Use || true to prevent job failure if clean/mrproper don't exist
-        make mrproper || true
+        echo "Cleaning previous builds (if any)..."
+        # Use || true to prevent job failure if clean/mrproper targets are not yet available or fail
+        make clean CC=clang ARCH=$ARCH SUBARCH=$SUBARCH CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi- CLANG_TRIPLE=aarch64-linux-gnu- || true
+        make mrproper CC=clang ARCH=$ARCH SUBARCH=$SUBARCH CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi- CLANG_TRIPLE=aarch64-linux-gnu- || true
+        echo "Previous builds cleaned."
         
-        # Configure with defconfig
-        # The correct way to apply a defconfig is 'make <defconfig_name>'
-        make CC=clang ARCH=$ARCH SUBARCH=$SUBARCH CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi- CLANG_TRIPLE=aarch64-linux-gnu- ${{ env.DEFCONFIG }}
+        echo "Running defconfig target to generate .config file..."
+        make CC=clang ARCH=$ARCH SUBARCH=$SUBARCH CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi- CLANG_TRIPLE=aarch64-linux-gnu- ${{ env.DEFCONFIG }} || { echo "❌ Failed to apply defconfig!"; exit 1; }
         
-        # Ensure .config exists after running defconfig
         if [ ! -f .config ]; then
-            echo "❌ .config file was not created after running defconfig. Kernel configuration failed."
+            echo "❌ .config file was not created after running defconfig. Kernel configuration failed. This is critical."
             exit 1
         fi
 
-        echo "Current .config content before KSU/SUSFS additions:"
-        cat .config | grep -E "CONFIG_KSU|CONFIG_KSU_SUSFS" || true # Show existing KSU/SUSFS lines
+        echo "Current .config content before KSU/SUSFS additions (grep for relevant configs):"
+        grep -E "CONFIG_KSU|CONFIG_KSU_SUSFS" .config || true # Show existing KSU/SUSFS lines
 
-        # Enable KernelSU by appending to .config
+        echo "Appending KernelSU config to .config..."
         echo "CONFIG_KSU=y" >> .config
         echo "CONFIG_KSU_DEBUG=n" >> .config
         
-        # Enable SUSFS if its config options are generally known or expected in the defconfig.
-        # It's safer to check the *Kconfig* files or the defconfig for explicit support before adding.
-        # A more robust check might be `grep -q "CONFIG_KSU_SUSFS" Kconfig` if SUSFS adds its own Kconfig entries.
-        if grep -q "CONFIG_KSU_SUSFS" arch/arm64/configs/${{ env.DEFCONFIG }} 2>/dev/null || \
-           grep -q "CONFIG_KSU_SUSFS" Kconfig 2>/dev/null; then # Check both defconfig and Kconfig for SUSFS entry
-          echo "✅ Enabling SUSFS support in .config"
+        echo "Checking for SUSFS support and appending to .config if needed..."
+        # Checking Kconfig is more reliable for whether the option exists at all.
+        # If the Kconfig for SUSFS is present, we enable it.
+        if grep -q "CONFIG_KSU_SUSFS" Kconfig 2>/dev/null; then
+          echo "✅ Enabling SUSFS support in .config based on Kconfig presence."
           echo "CONFIG_KSU_SUSFS=y" >> .config
           echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> .config
           echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y" >> .config
           echo "CONFIG_KSU_SUSFS_SUS_OVERLAYFS=y" >> .config
         else
-          echo "⚠️  SUSFS config options not found in defconfig or Kconfig. Skipping SUSFS config injection."
-          # Optionally ensure they are off if not found, to prevent build issues from unwanted configs
+          echo "⚠️  CONFIG_KSU_SUSFS not found in Kconfig. Skipping SUSFS config injection. Ensure SUSFS Kconfig patches are applied."
+          # Remove any potential stale SUSFS configs to prevent build issues
           sed -i '/CONFIG_KSU_SUSFS/d' .config
           sed -i '/CONFIG_KSU_SUSFS_SUS_MOUNT/d' .config
           sed -i '/CONFIG_KSU_SUSFS_SUS_KSTAT/d' .config
           sed -i '/CONFIG_KSU_SUSFS_SUS_OVERLAYFS/d' .config
         fi
         
-        # Regenerate config to pick up manual changes and resolve dependencies
-        # This is crucial after modifying .config directly
-        echo "Running olddefconfig to reconcile .config"
-        make CC=clang ARCH=$ARCH SUBARCH=$SUBARCH CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi- CLANG_TRIPLE=aarch64-linux-gnu- olddefconfig
+        echo "Running olddefconfig to reconcile .config and resolve dependencies after manual changes..."
+        make CC=clang ARCH=$ARCH SUBARCH=$SUBARCH CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi- CLANG_TRIPLE=aarch64-linux-gnu- olddefconfig || { echo "❌ olddefconfig failed!"; exit 1; }
         
-        # Verify KernelSU is enabled in the final .config
+        echo "Final .config content (grep for relevant configs):"
+        grep -E "CONFIG_KSU|CONFIG_KSU_SUSFS" .config || true
+        
         if grep -q "CONFIG_KSU=y" .config; then
-          echo "✅ KernelSU enabled in final .config"
+          echo "✅ KernelSU enabled in final .config."
         else
-          echo "❌ KernelSU not found in final .config. Build might fail."
-          exit 1 # Fail fast if KSU is not enabled after configuration
+          echo "❌ KernelSU not found enabled in final .config. Build might fail without root functionality."
+          exit 1 # Fail if KSU is not enabled after configuration
         fi
-        # Verify SUSFS is enabled if it was supposed to be
         if grep -q "CONFIG_KSU_SUSFS=y" .config; then
-            echo "✅ SUSFS enabled in final .config"
+            echo "✅ SUSFS enabled in final .config."
+        else
+            echo "⚠️  SUSFS not found enabled in final .config. It might not be integrated correctly."
         fi
-        
-        echo "Final .config snippet:"
-        cat .config | grep -E "CONFIG_KSU|CONFIG_KSU_SUSFS" || true
+        echo "Kernel configuration complete."
 
     - name: Build kernel
       run: |
-        echo "Starting kernel build..."
+        echo "Starting kernel build with $(nproc) parallel jobs..."
         
-        # Start build with verbose output
         make -j$(nproc) \
           CC=clang \
           ARCH=$ARCH \
@@ -417,47 +422,48 @@ jobs:
           CLANG_TRIPLE=aarch64-linux-gnu- \
           CONFIG_NO_ERROR_ON_MISMATCH=y \
           V=1 \
-          2>&1 | tee build.log
+          2>&1 | tee build.log || { echo "❌ Kernel build failed! Check build.log for errors."; exit 1; }
+        
+        echo "Kernel build command finished."
 
     - name: Check build result
       run: |
+        echo "Checking build result..."
         if [ -f arch/arm64/boot/Image ]; then
-          echo "✅ Kernel built successfully!"
+          echo "✅ Kernel built successfully! Image found at arch/arm64/boot/Image"
           echo "Kernel image details:"
           ls -la arch/arm64/boot/
           file arch/arm64/boot/Image
         else
-          echo "❌ Kernel build failed!"
+          echo "❌ Kernel build failed! Image not found at arch/arm64/boot/Image"
           echo "Build directory contents:"
           ls -la arch/arm64/boot/ || echo "Boot directory not found"
           echo ""
           echo "Last 100 lines of build log:"
-          tail -100 build.log
+          tail -100 build.log || true
           echo ""
           echo "Error summary (last 20 lines with 'error' keyword):"
-          grep -i error build.log | tail -20
+          grep -i error build.log | tail -20 || true
+          echo ""
           echo "Warning summary (last 20 lines with 'warning' keyword):"
-          grep -i warning build.log | tail -20
+          grep -i warning build.log | tail -20 || true
           exit 1
         fi
 
     - name: Prepare kernel image
       run: |
+        echo "Preparing kernel image for packaging..."
         mkdir -p output
         
-        # Copy kernel image
-        cp arch/arm64/boot/Image output/
+        cp arch/arm64/boot/Image output/ || { echo "❌ Failed to copy Image!"; exit 1; }
         
-        # Create kernel zip name with timestamp
         TIMESTAMP=$(date '+%Y%m%d_%H%M%S')
         KERNEL_ZIP="$KERNEL_NAME-$DEVICE-${{ inputs.kernelsu_variant }}-$TIMESTAMP.zip"
         echo "KERNEL_ZIP=$KERNEL_ZIP" >> $GITHUB_ENV
         
-        # Get kernel version
         KERNEL_VERSION=$(cat include/config/kernel.release 2>/dev/null || echo "unknown")
         echo "KERNEL_VERSION=$KERNEL_VERSION" >> $GITHUB_ENV
         
-        # Create info file
         cat > output/build_info.txt << EOF
         Kernel: $KERNEL_NAME
         Device: $DEVICE
@@ -469,18 +475,18 @@ jobs:
         Commit: $GITHUB_SHA
         EOF
         
-        echo "✅ Kernel preparation completed"
+        echo "✅ Kernel preparation completed."
 
     - name: Create flashable zip
       run: |
-        mkdir -p output/anykernel3_temp # Create a temporary directory for AnyKernel3
+        echo "Creating flashable zip..."
+        mkdir -p output/anykernel3_temp # Create a temporary directory for AnyKernel3 operations
         cd output/anykernel3_temp
         
-        # Download AnyKernel3
         echo "Downloading AnyKernel3..."
-        wget -q https://github.com/osm0sis/AnyKernel3/archive/refs/heads/master.zip
-        unzip -q master.zip
-        cp -r AnyKernel3-master/* .
+        wget -q https://github.com/osm0sis/AnyKernel3/archive/refs/heads/master.zip || { echo "❌ Failed to download AnyKernel3!"; exit 1; }
+        unzip -q master.zip || { echo "❌ Failed to unzip AnyKernel3!"; exit 1; }
+        cp -r AnyKernel3-master/* . || { echo "❌ Failed to copy AnyKernel3 contents!"; exit 1; }
         rm -rf AnyKernel3-master master.zip
         
         # Configure AnyKernel3 for selected device
@@ -498,7 +504,7 @@ jobs:
         do.systemless=1
         do.cleanup=1
         do.cleanuponabort=0
-        device.name1=${{ env.DEVICE }} # Use env.DEVICE here
+        device.name1=${{ env.DEVICE }} # Use env.DEVICE here for consistency
         device.name2=beyond2lte
         device.name3=SM-G975F
         device.name4=beyond1lte
@@ -526,16 +532,15 @@ jobs:
         write_boot;
         EOF
         
-        # Copy kernel image from parent directory
-        cp ../Image .
+        cp ../Image . || { echo "❌ Failed to copy kernel Image to AnyKernel3 dir!"; exit 1; }
         
-        # Create zip in the parent directory (output/)
-        zip -r ../${{ env.KERNEL_ZIP }} * -x "*.git*" "*.md" "*.txt"
+        echo "Creating flashable zip: ../${{ env.KERNEL_ZIP }}"
+        zip -r ../${{ env.KERNEL_ZIP }} ./* -x "*.git*" "*.md" "*.txt" || { echo "❌ Failed to create flashable zip!"; exit 1; }
         
         cd ../.. # Go back to the root of the repo
         rm -rf output/anykernel3_temp # Clean up temporary AnyKernel3 directory
         echo "✅ Flashable zip created: output/${{ env.KERNEL_ZIP }}"
-        ls -la output/${{ env.KERNEL_ZIP }}
+        ls -la output/${{ env.KERNEL_ZIP }} || true
 
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
@@ -592,5 +597,5 @@ jobs:
         echo "### ccache stats" >> $GITHUB_STEP_SUMMARY
         ccache --show-stats >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
-        echo "### ccache stats" >> $GITHUB_STEP_SUMMARY
+        echo "### ccache stats (repeated for visibility)" >> $GITHUB_STEP_SUMMARY
         ccache --show-stats >> $GITHUB_STEP_SUMMARY
