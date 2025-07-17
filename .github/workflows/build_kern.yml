@@ -14,7 +14,7 @@ on:
       kernelsu_tag:
         description: 'KernelSU tag to build'
         required: true
-        default: 'main'
+        default: 'master'
         type: string
       susfs_repo:
         description: 'SUSFS repository to use'
@@ -419,4 +419,4 @@ jobs:
         echo "- **Output:** $KERNEL_ZIP" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "### ccache stats" >> $GITHUB_STEP_SUMMARY
-        ccache --show-stats >> $GITHUB_STEP_SUMMARY
+        ccache --show-stats >> $GITHUB_STEP_SUMMARYThe key change: default: 'master' instead of default: 'main' because KernelSU-Next uses "master" as the default branch, not "main".
