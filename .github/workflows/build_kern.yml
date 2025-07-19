@@ -19,7 +19,7 @@ on:
       susfs_repo:
         description: 'SUSFS repository to use'
         required: true
-        default: 'https://gitlab.com/simonpunk/susfs4ksu.git'
+        default: 'https://github.com/iHagoss/susfs4ksu.git'
         type: choice
         options:
           - 'https://gitlab.com/simonpunk/susfs4ksu.git'
@@ -152,7 +152,7 @@ jobs:
         echo "Using tag: ${{ inputs.kernelsu_tag }}"
         
         if [ "${{ inputs.kernelsu_variant }}" == "KernelSU-Next" ]; then
-          git clone --depth=1 --branch ${{ inputs.kernelsu_tag }} https://github.com/KernelSU-Next/KernelSU-Next.git KernelSU || { echo "❌ Failed to clone KernelSU-Next!"; exit 1; }
+          git clone --depth=1 --branch ${{ inputs.kernelsu_tag }} https://github.com/iHagoss/KernelSU-Next.git KernelSU || { echo "❌ Failed to clone KernelSU-Next!"; exit 1; }
         else
           git clone --depth=1 --branch ${{ inputs.kernelsu_tag }} https://github.com/tiann/KernelSU.git KernelSU || { echo "❌ Failed to clone KernelSU!"; exit 1; }
         fi
