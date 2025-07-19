@@ -145,101 +145,6 @@ jobs:
         echo "GCC arm version:"
         arm-linux-androideabi-gcc --version
 
-    - name: Find and prepare defconfig
-      run: |
-        echo "Searching for defconfig files..."
-        
-        echo "Available defconfig files in arch/arm64/configs/:"
-        ls -la arch/arm64/configs/ | head -20
-        
-        DEFCONFIG_FOUND=false
-        SELECTED_DEFCONFIG=""
-        
-        # Search for device-specific defconfigs in order of preference
-        for config in \
-          ${DEVICE}_defconfig \
-          beyond2lte_defconfig \
-          beyond_defconfig \
-          exynos9820_defconfig \
-          universal9820_defconfig \
-          samsung_defconfig \
-          android_defconfig \
-          defconfig; do
-          
-          if [ -f "arch/arm64/configs/$config" ]; then
-            echo "✅ Found defconfig: $config"
-            SELECTED_DEFCONFIG="$config"
-            DEFCONFIG_FOUND=true
-            break
-          fi
-        done
-        
-        # If still not found, try pattern matching
-        if [ "$DEFCONFIG_FOUND" = false ]; then
-          echo "No exact match found. Searching with patterns..."
-          FOUND_CONFIG=$(find arch/arm64/configs -name "*${{ inputs.device }}*" | head -1)
-          if [ -n "$FOUND_CONFIG" ]; then
-            SELECTED_DEFCONFIG=$(basename "$FOUND_CONFIG")
-            echo "✅ Using device pattern defconfig: $SELECTED_DEFCONFIG"
-            DEFCONFIG_FOUND=true
-          else
-            FOUND_CONFIG=$(find arch/arm64/configs -name "*beyond*" | head -1)
-            if [ -n "$FOUND_CONFIG" ]; then
-              SELECTED_DEFCONFIG=$(basename "$FOUND_CONFIG")
-              echo "✅ Using beyond pattern defconfig: $SELECTED_DEFCONFIG"
-              DEFCONFIG_FOUND=true
-            else
-              FOUND_CONFIG=$(find arch/arm64/configs -name "*exynos*" | head -1)
-              if [ -n "$FOUND_CONFIG" ]; then
-                SELECTED_DEFCONFIG=$(basename "$FOUND_CONFIG")
-                echo "✅ Using exynos pattern defconfig: $SELECTED_DEFCONFIG"
-                DEFCONFIG_FOUND=true
-              else
-                FOUND_CONFIG=$(find arch/arm64/configs -name "*universal*" | head -1)
-                if [ -n "$FOUND_CONFIG" ]; then
-                  SELECTED_DEFCONFIG=$(basename "$FOUND_CONFIG")
-                  echo "✅ Using universal pattern defconfig: $SELECTED_DEFCONFIG"
-                  DEFCONFIG_FOUND=true
-                else
-                  FOUND_CONFIG=$(find arch/arm64/configs -name "*samsung*" | head -1)
-                  if [ -n "$FOUND_CONFIG" ]; then
-                    SELECTED_DEFCONFIG=$(basename "$FOUND_CONFIG")
-                    echo "✅ Using samsung pattern defconfig: $SELECTED_DEFCONFIG"
-                    DEFCONFIG_FOUND=true
-                  fi
-                fi
-              fi
-            fi
-          fi
-        fi
-        
-        # Last resort: use the first available defconfig
-        if [ "$DEFCONFIG_FOUND" = false ]; then
-          echo "⚠️ No suitable defconfig found with patterns. Using first available defconfig..."
-          FIRST_CONFIG=$(ls arch/arm64/configs/ | head -1)
-          if [ -n "$FIRST_CONFIG" ]; then
-            SELECTED_DEFCONFIG="$FIRST_CONFIG"
-            echo "✅ Using first available defconfig: $SELECTED_DEFCONFIG"
-            DEFCONFIG_FOUND=true
-          fi
-        fi
-        
-        if [ "$DEFCONFIG_FOUND" = false ]; then
-          echo "❌ No defconfig found at all!"
-          echo "All available defconfigs:"
-          ls -la arch/arm64/configs/
-          exit 1
-        else
-          echo "DEFCONFIG=$SELECTED_DEFCONFIG" >> $GITHUB_ENV
-          echo "Final selected DEFCONFIG: $SELECTED_DEFCONFIG"
-          
-          # Verify the defconfig file actually exists
-          if [ ! -f "arch/arm64/configs/$SELECTED_DEFCONFIG" ]; then
-            echo "❌ Selected defconfig file does not exist: arch/arm64/configs/$SELECTED_DEFCONFIG"
-            exit 1
-          fi
-        fi
-
     - name: Clone KernelSU as submodule
       run: |
         echo "Adding KernelSU as git submodule..."
@@ -259,13 +164,15 @@ jobs:
         
         git submodule update --init --recursive
         
-        # Set KSU_GIT_VERSION before building
+        # Set KSU_GIT_VERSION properly
         cd KernelSU
-        KSU_VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "unknown")
+        KSU_VERSION=$(git describe --tags --always --dirty 2>/dev/null || git rev-parse --short HEAD 2>/dev/null || echo "unknown")
         cd ..
-        export KSU_GIT_VERSION="$KSU_VERSION"
         echo "KSU_GIT_VERSION=$KSU_VERSION" >> $GITHUB_ENV
         echo "KernelSU version: $KSU_VERSION"
+        
+        # Export for current shell session
+        export KSU_GIT_VERSION="$KSU_VERSION"
         
         echo "KernelSU submodule added successfully"
         echo "KernelSU directory contents:"
@@ -363,17 +270,102 @@ jobs:
         
         echo "✅ SUSFS integration completed"
 
+    - name: Find and prepare defconfig
+      run: |
+        echo "Searching for defconfig files..."
+        
+        echo "Available config files in arch/arm64/configs/:"
+        ls -la arch/arm64/configs/ | head -20
+        
+        DEFCONFIG_FOUND=false
+        SELECTED_DEFCONFIG=""
+        
+        # First, search for device-specific .config files (your kernel uses .config extension)
+        for config in \
+          ${DEVICE}.config \
+          beyond2lte.config \
+          beyond1lte.config \
+          beyond0lte.config \
+          beyondx.config; do
+          
+          if [ -f "arch/arm64/configs/$config" ]; then
+            echo "✅ Found device config: $config"
+            SELECTED_DEFCONFIG="$config"
+            DEFCONFIG_FOUND=true
+            break
+          fi
+        done
+        
+        # If no device config found, try defconfig files
+        if [ "$DEFCONFIG_FOUND" = false ]; then
+          echo "No device config found. Searching for defconfig files..."
+          for config in \
+            exynos9820_defconfig \
+            exynos9820-m62xx_defconfig \
+            defconfig; do
+            
+            if [ -f "arch/arm64/configs/$config" ]; then
+              echo "✅ Found defconfig: $config"
+              SELECTED_DEFCONFIG="$config"
+              DEFCONFIG_FOUND=true
+              break
+            fi
+          done
+        fi
+        
+        # If still not found, try pattern matching
+        if [ "$DEFCONFIG_FOUND" = false ]; then
+          echo "No exact match found. Searching with patterns..."
+          FOUND_CONFIG=$(find arch/arm64/configs -name "*${{ inputs.device }}*" | head -1)
+          if [ -n "$FOUND_CONFIG" ]; then
+            SELECTED_DEFCONFIG=$(basename "$FOUND_CONFIG")
+            echo "✅ Using device pattern config: $SELECTED_DEFCONFIG"
+            DEFCONFIG_FOUND=true
+          else
+            FOUND_CONFIG=$(find arch/arm64/configs -name "*beyond*" | head -1)
+            if [ -n "$FOUND_CONFIG" ]; then
+              SELECTED_DEFCONFIG=$(basename "$FOUND_CONFIG")
+              echo "✅ Using beyond pattern config: $SELECTED_DEFCONFIG"
+              DEFCONFIG_FOUND=true
+            else
+              FOUND_CONFIG=$(find arch/arm64/configs -name "*exynos*" | head -1)
+              if [ -n "$FOUND_CONFIG" ]; then
+                SELECTED_DEFCONFIG=$(basename "$FOUND_CONFIG")
+                echo "✅ Using exynos pattern config: $SELECTED_DEFCONFIG"
+                DEFCONFIG_FOUND=true
+              fi
+            fi
+          fi
+        fi
+        
+        if [ "$DEFCONFIG_FOUND" = false ]; then
+          echo "❌ No suitable config found!"
+          echo "All available configs:"
+          ls -la arch/arm64/configs/
+          exit 1
+        else
+          echo "DEFCONFIG=$SELECTED_DEFCONFIG" >> $GITHUB_ENV
+          echo "Final selected CONFIG: $SELECTED_DEFCONFIG"
+          
+          # Verify the config file actually exists
+          if [ ! -f "arch/arm64/configs/$SELECTED_DEFCONFIG" ]; then
+            echo "❌ Selected config file does not exist: arch/arm64/configs/$SELECTED_DEFCONFIG"
+            exit 1
+          fi
+        fi
+
     - name: Configure kernel
       run: |
-        echo "Configuring kernel with defconfig: ${{ env.DEFCONFIG }}"
+        echo "Configuring kernel with config: ${{ env.DEFCONFIG }}"
         
         # Set KSU environment variable
         export KSU_GIT_VERSION="${{ env.KSU_GIT_VERSION }}"
+        echo "Using KSU_GIT_VERSION: $KSU_GIT_VERSION"
         
-        # Verify defconfig exists
+        # Verify config exists
         if [ ! -f "arch/arm64/configs/${{ env.DEFCONFIG }}" ]; then
-          echo "❌ Defconfig file not found: arch/arm64/configs/${{ env.DEFCONFIG }}"
-          echo "Available defconfigs:"
+          echo "❌ Config file not found: arch/arm64/configs/${{ env.DEFCONFIG }}"
+          echo "Available configs:"
           ls -la arch/arm64/configs/
           exit 1
         fi
@@ -382,13 +374,36 @@ jobs:
         make clean ARCH=$ARCH 2>/dev/null || true
         make mrproper ARCH=$ARCH 2>/dev/null || true
         
-        # Apply defconfig
-        echo "Running defconfig..."
-        if ! make ARCH=$ARCH SUBARCH=$SUBARCH KSU_GIT_VERSION="${{ env.KSU_GIT_VERSION }}" ${{ env.DEFCONFIG }}; then
-          echo "❌ Failed to apply defconfig with KSU_GIT_VERSION!"
-          echo "Trying with CC=clang..."
-          if ! make CC=clang ARCH=$ARCH SUBARCH=$SUBARCH KSU_GIT_VERSION="${{ env.KSU_GIT_VERSION }}" ${{ env.DEFCONFIG }}; then
-            echo "❌ Defconfig failed with both attempts!"
+        # Handle different config types
+        CONFIG_FILE="${{ env.DEFCONFIG }}"
+        
+        if [[ "$CONFIG_FILE" == *.config ]]; then
+          # For .config files, we need to copy and merge them
+          echo "Processing .config file: $CONFIG_FILE"
+          
+          # Start with base defconfig if available
+          if [ -f "arch/arm64/configs/exynos9820_defconfig" ]; then
+            echo "Using exynos9820_defconfig as base..."
+            make ARCH=$ARCH SUBARCH=$SUBARCH KSU_GIT_VERSION="$KSU_GIT_VERSION" exynos9820_defconfig
+          elif [ -f "arch/arm64/configs/defconfig" ]; then
+            echo "Using defconfig as base..."
+            make ARCH=$ARCH SUBARCH=$SUBARCH KSU_GIT_VERSION="$KSU_GIT_VERSION" defconfig
+          else
+            echo "No base defconfig found, starting fresh..."
+            make ARCH=$ARCH SUBARCH=$SUBARCH KSU_GIT_VERSION="$KSU_GIT_VERSION" allnoconfig
+          fi
+          
+          # Merge device-specific config
+          echo "Merging device config: $CONFIG_FILE"
+          ./scripts/kconfig/merge_config.sh .config arch/arm64/configs/$CONFIG_FILE || {
+            echo "merge_config.sh not found, trying manual merge..."
+            cat arch/arm64/configs/$CONFIG_FILE >> .config
+          }
+        else
+          # Regular defconfig file
+          echo "Applying defconfig: $CONFIG_FILE"
+          if ! make ARCH=$ARCH SUBARCH=$SUBARCH KSU_GIT_VERSION="$KSU_GIT_VERSION" $CONFIG_FILE; then
+            echo "❌ Failed to apply defconfig!"
             exit 1
           fi
         fi
@@ -413,13 +428,20 @@ jobs:
           echo "⚠️ SUSFS configuration not found in Kconfig"
         fi
         
+        # Add KSU config if available
+        if [ -f "arch/arm64/configs/ksu.config" ]; then
+          echo "Found ksu.config, merging..."
+          ./scripts/kconfig/merge_config.sh .config arch/arm64/configs/ksu.config || {
+            echo "merge_config.sh failed, appending manually..."
+            cat arch/arm64/configs/ksu.config >> .config
+          }
+        fi
+        
         # Resolve configuration dependencies
         echo "Resolving configuration dependencies..."
-        if ! make ARCH=$ARCH SUBARCH=$SUBARCH KSU_GIT_VERSION="${{ env.KSU_GIT_VERSION }}" olddefconfig; then
-          if ! make CC=clang ARCH=$ARCH SUBARCH=$SUBARCH KSU_GIT_VERSION="${{ env.KSU_GIT_VERSION }}" olddefconfig; then
-            echo "❌ olddefconfig failed!"; 
-            exit 1
-          fi
+        if ! make ARCH=$ARCH SUBARCH=$SUBARCH KSU_GIT_VERSION="$KSU_GIT_VERSION" olddefconfig; then
+          echo "❌ olddefconfig failed!"; 
+          exit 1
         fi
         
         # Verify KernelSU is enabled
@@ -438,6 +460,7 @@ jobs:
         
         # Set environment variables for KernelSU
         export KSU_GIT_VERSION="${{ env.KSU_GIT_VERSION }}"
+        echo "Building with KSU_GIT_VERSION: $KSU_GIT_VERSION"
         
         # Build with multiple fallback options
         build_success=false
@@ -451,7 +474,7 @@ jobs:
           CROSS_COMPILE=aarch64-linux-android- \
           CROSS_COMPILE_ARM32=arm-linux-androideabi- \
           CLANG_TRIPLE=aarch64-linux-gnu- \
-          KSU_GIT_VERSION="${{ env.KSU_GIT_VERSION }}" \
+          KSU_GIT_VERSION="$KSU_GIT_VERSION" \
           CONFIG_NO_ERROR_ON_MISMATCH=y \
           2>&1 | tee build.log; then
           build_success=true
@@ -462,15 +485,28 @@ jobs:
         if [ "$build_success" = false ]; then
           echo "Clang build failed, trying with GCC..."
           make clean ARCH=$ARCH 2>/dev/null || true
-          make ARCH=$ARCH SUBARCH=$SUBARCH KSU_GIT_VERSION="${{ env.KSU_GIT_VERSION }}" ${{ env.DEFCONFIG }} || exit 1
+          
+          # Re-apply configuration
+          CONFIG_FILE="${{ env.DEFCONFIG }}"
+          if [[ "$CONFIG_FILE" == *.config ]]; then
+            if [ -f "arch/arm64/configs/exynos9820_defconfig" ]; then
+              make ARCH=$ARCH SUBARCH=$SUBARCH KSU_GIT_VERSION="$KSU_GIT_VERSION" exynos9820_defconfig
+            else
+              make ARCH=$ARCH SUBARCH=$SUBARCH KSU_GIT_VERSION="$KSU_GIT_VERSION" defconfig
+            fi
+            cat arch/arm64/configs/$CONFIG_FILE >> .config
+          else
+            make ARCH=$ARCH SUBARCH=$SUBARCH KSU_GIT_VERSION="$KSU_GIT_VERSION" $CONFIG_FILE
+          fi
+          
           echo "CONFIG_KSU=y" >> .config
-          make ARCH=$ARCH SUBARCH=$SUBARCH KSU_GIT_VERSION="${{ env.KSU_GIT_VERSION }}" olddefconfig || exit 1
+          make ARCH=$ARCH SUBARCH=$SUBARCH KSU_GIT_VERSION="$KSU_GIT_VERSION" olddefconfig || exit 1
           
           if make -j$(nproc) \
             ARCH=$ARCH \
             SUBARCH=$SUBARCH \
             CROSS_COMPILE=aarch64-linux-gnu- \
-            KSU_GIT_VERSION="${{ env.KSU_GIT_VERSION }}" \
+            KSU_GIT_VERSION="$KSU_GIT_VERSION" \
             CONFIG_NO_ERROR_ON_MISMATCH=y \
             2>&1 | tee -a build.log; then
             build_success=true
@@ -635,7 +671,4 @@ jobs:
         echo "- **Version:** $KERNEL_VERSION" >> $GITHUB_STEP_SUMMARY
         echo "- **KernelSU:** ${{ inputs.kernelsu_variant }} (${{ inputs.kernelsu_tag }})" >> $GITHUB_STEP_SUMMARY
         echo "- **SUSFS:** ${{ inputs.susfs_repo }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **Output:** \`$KERNEL_ZIP\`" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "### 📊 Build Statistics" >> $GITHUB_STEP_SUMMARY
-        ccache --show-stats >> $GITHUB_STEP_SUMMARY
+        echo "- **Output:** \`$KERNEL
