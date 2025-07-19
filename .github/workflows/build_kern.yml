@@ -225,7 +225,7 @@ jobs:
         fi
 
         if [ "${{ inputs.kernelsu_variant }}" == "KernelSU-Next" ]; then
-          git submodule add --force --branch next https://github.com/iHagoss/KernelSU-Next.git KernelSU || { # Updated branch
+          git submodule add --force --branch next https://github.com/KernelSU-Next/KernelSU-Next.git KernelSU || { # Updated branch
             echo "❌ Failed to add KernelSU-Next as submodule!"; exit 1; 
           }
         else
