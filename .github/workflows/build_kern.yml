@@ -58,8 +58,6 @@ jobs:
     - name: Checkout kernel source
       uses: actions/checkout@v4
       with:
-        repository: iHagoss/KERN # Updated
-        ref: main # Updated
         token: ${{ secrets.GH_PUSH_TOKEN }}
         fetch-depth: 0
         submodules: recursive
@@ -158,20 +156,19 @@ jobs:
         SELECTED_DEFCONFIG=""
         
         # Search for device-specific defconfigs in order of preference
-        # Based on your provided list, these configs are typically named without _defconfig suffix
         for config in \
-          ${DEVICE}.config \
-          beyond2lte.config \
-          beyond1lte.config \
-          beyond0lte.config \
-          beyondx.config \
-          exynos9820-m62xx_defconfig \
+          ${DEVICE}_defconfig \
+          beyond2lte_defconfig \
+          beyond_defconfig \
           exynos9820_defconfig \
-          defconfig; do # Note: beyondX.config and defconfig are common fallbacks
+          universal9820_defconfig \
+          samsung_defconfig \
+          android_defconfig \
+          defconfig; do
           
           if [ -f "arch/arm64/configs/$config" ]; then
             echo "✅ Found defconfig: $config"
-            SELECTED_DEFCONFIG="arch/arm64/configs/$config" # Store full path for KCONFIG_DEFCONFIG
+            SELECTED_DEFCONFIG="$config"
             DEFCONFIG_FOUND=true
             break
           fi
@@ -179,63 +176,96 @@ jobs:
         
         # If still not found, try pattern matching
         if [ "$DEFCONFIG_FOUND" = false ]; then
+          echo "No exact match found. Searching with patterns..."
           FOUND_CONFIG=$(find arch/arm64/configs -name "*${{ inputs.device }}*" | head -1)
           if [ -n "$FOUND_CONFIG" ]; then
-            SELECTED_DEFCONFIG="$FOUND_CONFIG"
-            echo "✅ Using device pattern defconfig: $(basename "$FOUND_CONFIG")"
+            SELECTED_DEFCONFIG=$(basename "$FOUND_CONFIG")
+            echo "✅ Using device pattern defconfig: $SELECTED_DEFCONFIG"
             DEFCONFIG_FOUND=true
           else
             FOUND_CONFIG=$(find arch/arm64/configs -name "*beyond*" | head -1)
             if [ -n "$FOUND_CONFIG" ]; then
-              SELECTED_DEFCONFIG="$FOUND_CONFIG"
-              echo "✅ Using beyond pattern defconfig: $(basename "$FOUND_CONFIG")"
+              SELECTED_DEFCONFIG=$(basename "$FOUND_CONFIG")
+              echo "✅ Using beyond pattern defconfig: $SELECTED_DEFCONFIG"
               DEFCONFIG_FOUND=true
             else
               FOUND_CONFIG=$(find arch/arm64/configs -name "*exynos*" | head -1)
               if [ -n "$FOUND_CONFIG" ]; then
-                SELECTED_DEFCONFIG="$FOUND_CONFIG"
-                echo "✅ Using exynos pattern defconfig: $(basename "$FOUND_CONFIG")"
+                SELECTED_DEFCONFIG=$(basename "$FOUND_CONFIG")
+                echo "✅ Using exynos pattern defconfig: $SELECTED_DEFCONFIG"
                 DEFCONFIG_FOUND=true
+              else
+                FOUND_CONFIG=$(find arch/arm64/configs -name "*universal*" | head -1)
+                if [ -n "$FOUND_CONFIG" ]; then
+                  SELECTED_DEFCONFIG=$(basename "$FOUND_CONFIG")
+                  echo "✅ Using universal pattern defconfig: $SELECTED_DEFCONFIG"
+                  DEFCONFIG_FOUND=true
+                else
+                  FOUND_CONFIG=$(find arch/arm64/configs -name "*samsung*" | head -1)
+                  if [ -n "$FOUND_CONFIG" ]; then
+                    SELECTED_DEFCONFIG=$(basename "$FOUND_CONFIG")
+                    echo "✅ Using samsung pattern defconfig: $SELECTED_DEFCONFIG"
+                    DEFCONFIG_FOUND=true
+                  fi
+                fi
               fi
             fi
           fi
         fi
         
+        # Last resort: use the first available defconfig
         if [ "$DEFCONFIG_FOUND" = false ]; then
-          echo "❌ No suitable defconfig found!"
+          echo "⚠️ No suitable defconfig found with patterns. Using first available defconfig..."
+          FIRST_CONFIG=$(ls arch/arm64/configs/ | head -1)
+          if [ -n "$FIRST_CONFIG" ]; then
+            SELECTED_DEFCONFIG="$FIRST_CONFIG"
+            echo "✅ Using first available defconfig: $SELECTED_DEFCONFIG"
+            DEFCONFIG_FOUND=true
+          fi
+        fi
+        
+        if [ "$DEFCONFIG_FOUND" = false ]; then
+          echo "❌ No defconfig found at all!"
           echo "All available defconfigs:"
           ls -la arch/arm64/configs/
           exit 1
         else
-          echo "KCONFIG_DEFCONFIG_PATH=$SELECTED_DEFCONFIG" >> $GITHUB_ENV # Store full path
-          echo "Final selected defconfig path: $SELECTED_DEFCONFIG"
+          echo "DEFCONFIG=$SELECTED_DEFCONFIG" >> $GITHUB_ENV
+          echo "Final selected DEFCONFIG: $SELECTED_DEFCONFIG"
+          
+          # Verify the defconfig file actually exists
+          if [ ! -f "arch/arm64/configs/$SELECTED_DEFCONFIG" ]; then
+            echo "❌ Selected defconfig file does not exist: arch/arm64/configs/$SELECTED_DEFCONFIG"
+            exit 1
+          fi
         fi
 
     - name: Clone KernelSU as submodule
       run: |
         echo "Adding KernelSU as git submodule..."
         
-        # Remove existing KernelSU directory if it exists (important for clean submodule clone)
+        # Remove existing KernelSU directory if it exists
         rm -rf KernelSU
         
-        # Ensure the submodule path is clean
-        if grep -q "KernelSU" .gitmodules; then
-            git submodule deinit -f -- KernelSU || true
-            git rm -f KernelSU || true
-        fi
-
         if [ "${{ inputs.kernelsu_variant }}" == "KernelSU-Next" ]; then
-          git submodule add --force --branch next https://github.com/KernelSU-Next/KernelSU-Next.git KernelSU || { # Updated branch
+          git submodule add --force --branch ${{ inputs.kernelsu_tag }} https://github.com/iHagoss/KernelSU-Next.git KernelSU || { 
             echo "❌ Failed to add KernelSU-Next as submodule!"; exit 1; 
           }
         else
-          # Fallback to tiann's KernelSU if not KernelSU-Next variant
           git submodule add --force --branch ${{ inputs.kernelsu_tag }} https://github.com/tiann/KernelSU.git KernelSU || { 
             echo "❌ Failed to add KernelSU as submodule!"; exit 1; 
           }
         fi
         
         git submodule update --init --recursive
+        
+        # Set KSU_GIT_VERSION before building
+        cd KernelSU
+        KSU_VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "unknown")
+        cd ..
+        export KSU_GIT_VERSION="$KSU_VERSION"
+        echo "KSU_GIT_VERSION=$KSU_VERSION" >> $GITHUB_ENV
+        echo "KernelSU version: $KSU_VERSION"
         
         echo "KernelSU submodule added successfully"
         echo "KernelSU directory contents:"
@@ -258,12 +288,9 @@ jobs:
           exit 1
         fi
         
-        # Set KSU_GIT_VERSION to avoid Makefile warnings (must be run inside KernelSU dir for git describe)
-        (cd KernelSU && KSU_VERSION=$(git describe --tags --always --dirty --match "v*") && echo "KSU_GIT_VERSION=$KSU_VERSION" >> $GITHUB_ENV) || {
-            echo "⚠️ Could not determine KSU_GIT_VERSION. Setting default.";
-            echo "KSU_GIT_VERSION=unknown" >> $GITHUB_ENV;
-        }
-
+        # Set KSU_GIT_VERSION environment variable
+        export KSU_GIT_VERSION="${{ env.KSU_GIT_VERSION }}"
+        
         # Find KernelSU kernel source directory
         KERNELSU_SOURCE_ROOT=""
         if [ -d "KernelSU/kernel" ]; then
@@ -278,25 +305,23 @@ jobs:
           exit 1
         fi
 
-        # Run KernelSU setup script (this is the preferred method)
-        SETUP_SH_PATH="$KERNELSU_SOURCE_ROOT/setup.sh"
-        if [ -f "$SETUP_SH_PATH" ]; then
-          echo "Running KernelSU setup script: $SETUP_SH_PATH"
-          chmod +x "$SETUP_SH_PATH"
-          # The setup.sh script expects to be run from the main kernel source root.
-          bash "$SETUP_SH_PATH" || { echo "❌ KernelSU setup failed during execution!"; exit 1; }
-        else
-          echo "❌ KernelSU setup.sh script not found at $SETUP_SH_PATH. Manual integration might be needed if setup.sh is missing."
-          # Fallback to copying files if setup.sh doesn't exist (less ideal but keeps process moving)
-          echo "Attempting to manually copy KernelSU files..."
-          cp -rf "$KERNELSU_SOURCE_ROOT"/* ./ || { echo "❌ Manual KernelSU file copy failed!"; exit 1; }
+        # Copy KernelSU files to kernel root
+        echo "Copying KernelSU files..."
+        cp -rf "$KERNELSU_SOURCE_ROOT"/* ./
+        
+        # Run KernelSU setup script if it exists
+        if [ -f "setup.sh" ]; then
+          echo "Running KernelSU setup script..."
+          chmod +x ./setup.sh
+          export KSU_GIT_VERSION="${{ env.KSU_GIT_VERSION }}"
+          bash ./setup.sh || { echo "❌ KernelSU setup failed!"; exit 1; }
         fi
         
         # Verify KernelSU integration
-        if [ -f "ksu.c" ] || find . -name "ksu.c" -path "*/ksu/*" | head -1 | grep -q .; then
+        if [ -f "ksu.c" ] || find . -name "*.c" -path "*/ksu/*" | head -1 | grep -q .; then
           echo "✅ KernelSU files integrated successfully"
         else
-          echo "❌ KernelSU integration failed! 'ksu.c' not found after setup."
+          echo "❌ KernelSU integration failed!"
           exit 1
         fi
 
@@ -340,22 +365,33 @@ jobs:
 
     - name: Configure kernel
       run: |
-        echo "Configuring kernel with defconfig: ${{ env.KCONFIG_DEFCONFIG_PATH }}"
+        echo "Configuring kernel with defconfig: ${{ env.DEFCONFIG }}"
+        
+        # Set KSU environment variable
+        export KSU_GIT_VERSION="${{ env.KSU_GIT_VERSION }}"
+        
+        # Verify defconfig exists
+        if [ ! -f "arch/arm64/configs/${{ env.DEFCONFIG }}" ]; then
+          echo "❌ Defconfig file not found: arch/arm64/configs/${{ env.DEFCONFIG }}"
+          echo "Available defconfigs:"
+          ls -la arch/arm64/configs/
+          exit 1
+        fi
         
         # Clean any previous build artifacts (ignore errors)
         make clean ARCH=$ARCH 2>/dev/null || true
         make mrproper ARCH=$ARCH 2>/dev/null || true
         
-        # Apply defconfig using KCONFIG_DEFCONFIG
+        # Apply defconfig
         echo "Running defconfig..."
-        make O=out ARCH=$ARCH SUBARCH=$SUBARCH KCONFIG_DEFCONFIG=${{ env.KCONFIG_DEFCONFIG_PATH }} defconfig || { 
-          echo "❌ Failed to apply defconfig!"; 
-          echo "Trying with CC=clang...";
-          make O=out CC=clang ARCH=$ARCH SUBARCH=$SUBARCH KCONFIG_DEFCONFIG=${{ env.KCONFIG_DEFCONFIG_PATH }} defconfig || {
-            echo "❌ Defconfig failed with both attempts!"; 
-            exit 1; 
-          }
-        }
+        if ! make ARCH=$ARCH SUBARCH=$SUBARCH KSU_GIT_VERSION="${{ env.KSU_GIT_VERSION }}" ${{ env.DEFCONFIG }}; then
+          echo "❌ Failed to apply defconfig with KSU_GIT_VERSION!"
+          echo "Trying with CC=clang..."
+          if ! make CC=clang ARCH=$ARCH SUBARCH=$SUBARCH KSU_GIT_VERSION="${{ env.KSU_GIT_VERSION }}" ${{ env.DEFCONFIG }}; then
+            echo "❌ Defconfig failed with both attempts!"
+            exit 1
+          fi
+        fi
         
         if [ ! -f .config ]; then
           echo "❌ .config file was not created!"
@@ -363,8 +399,6 @@ jobs:
         fi
 
         echo "Adding KernelSU configuration..."
-        # Add CONFIG_KSU and CONFIG_KSU_DEBUG to the .config file directly
-        # Ensure these are added to the 'out/.config' if using O=out in subsequent steps
         echo "CONFIG_KSU=y" >> .config
         echo "CONFIG_KSU_DEBUG=n" >> .config
         
@@ -381,12 +415,12 @@ jobs:
         
         # Resolve configuration dependencies
         echo "Resolving configuration dependencies..."
-        make O=out ARCH=$ARCH SUBARCH=$SUBARCH olddefconfig || {
-          make O=out CC=clang ARCH=$ARCH SUBARCH=$SUBARCH olddefconfig || {
+        if ! make ARCH=$ARCH SUBARCH=$SUBARCH KSU_GIT_VERSION="${{ env.KSU_GIT_VERSION }}" olddefconfig; then
+          if ! make CC=clang ARCH=$ARCH SUBARCH=$SUBARCH KSU_GIT_VERSION="${{ env.KSU_GIT_VERSION }}" olddefconfig; then
             echo "❌ olddefconfig failed!"; 
-            exit 1; 
-          }
-        }
+            exit 1
+          fi
+        fi
         
         # Verify KernelSU is enabled
         if grep -q "CONFIG_KSU=y" .config; then
@@ -403,7 +437,7 @@ jobs:
         echo "Starting kernel build..."
         
         # Set environment variables for KernelSU
-        # KSU_GIT_VERSION is already set in env from previous step
+        export KSU_GIT_VERSION="${{ env.KSU_GIT_VERSION }}"
         
         # Build with multiple fallback options
         build_success=false
@@ -411,13 +445,13 @@ jobs:
         # Try with clang first
         echo "Attempting build with clang..."
         if make -j$(nproc) \
-          O=out \
           CC=clang \
           ARCH=$ARCH \
           SUBARCH=$SUBARCH \
           CROSS_COMPILE=aarch64-linux-android- \
           CROSS_COMPILE_ARM32=arm-linux-androideabi- \
           CLANG_TRIPLE=aarch64-linux-gnu- \
+          KSU_GIT_VERSION="${{ env.KSU_GIT_VERSION }}" \
           CONFIG_NO_ERROR_ON_MISMATCH=y \
           2>&1 | tee build.log; then
           build_success=true
@@ -427,17 +461,16 @@ jobs:
         # If clang fails, try with GCC
         if [ "$build_success" = false ]; then
           echo "Clang build failed, trying with GCC..."
-          make clean ARCH=$ARCH 2>/dev/null || true # Clean after failed clang build
-          # Re-apply defconfig and KSU config to out/.config after clean
-          make O=out ARCH=$ARCH SUBARCH=$SUBARCH KCONFIG_DEFCONFIG=${{ env.KCONFIG_DEFCONFIG_PATH }} defconfig || exit 1 
-          echo "CONFIG_KSU=y" >> out/.config # Ensure KSU is still enabled
-          make O=out ARCH=$ARCH SUBARCH=$SUBARCH olddefconfig || exit 1 # Re-resolve config
+          make clean ARCH=$ARCH 2>/dev/null || true
+          make ARCH=$ARCH SUBARCH=$SUBARCH KSU_GIT_VERSION="${{ env.KSU_GIT_VERSION }}" ${{ env.DEFCONFIG }} || exit 1
+          echo "CONFIG_KSU=y" >> .config
+          make ARCH=$ARCH SUBARCH=$SUBARCH KSU_GIT_VERSION="${{ env.KSU_GIT_VERSION }}" olddefconfig || exit 1
           
           if make -j$(nproc) \
-            O=out \
             ARCH=$ARCH \
             SUBARCH=$SUBARCH \
             CROSS_COMPILE=aarch64-linux-gnu- \
+            KSU_GIT_VERSION="${{ env.KSU_GIT_VERSION }}" \
             CONFIG_NO_ERROR_ON_MISMATCH=y \
             2>&1 | tee -a build.log; then
             build_success=true
@@ -455,14 +488,14 @@ jobs:
     - name: Check build result
       run: |
         echo "Checking build result..."
-        if [ -f out/arch/arm64/boot/Image ]; then
+        if [ -f arch/arm64/boot/Image ]; then
           echo "✅ Kernel built successfully!"
-          ls -la out/arch/arm64/boot/
-          file out/arch/arm64/boot/Image
+          ls -la arch/arm64/boot/
+          file arch/arm64/boot/Image
         else
           echo "❌ Kernel build failed - Image not found!"
           echo "Boot directory contents:"
-          find out/arch/arm64/ -name "Image*" -o -name "zImage*" -o -name "vmlinux*" | head -10
+          find arch/arm64/ -name "Image*" -o -name "zImage*" -o -name "vmlinux*" | head -10
           exit 1
         fi
 
@@ -471,24 +504,20 @@ jobs:
         echo "Preparing kernel image..."
         mkdir -p output
         
-        cp out/arch/arm64/boot/Image output/
-        # Also copy dtbo.img if it was generated and needed
-        if [ -f out/arch/arm64/boot/dtbo.img ]; then
-            cp out/arch/arm64/boot/dtbo.img output/
-        fi
+        cp arch/arm64/boot/Image output/
         
         TIMESTAMP=$(date '+%Y%m%d_%H%M%S')
         KERNEL_ZIP="$KERNEL_NAME-$DEVICE-${{ inputs.kernelsu_variant }}-$TIMESTAMP.zip"
         echo "KERNEL_ZIP=$KERNEL_ZIP" >> $GITHUB_ENV
         
-        KERNEL_VERSION=$(cat out/include/config/kernel.release 2>/dev/null || echo "unknown") # Read from out/
+        KERNEL_VERSION=$(cat include/config/kernel.release 2>/dev/null || echo "unknown")
         echo "KERNEL_VERSION=$KERNEL_VERSION" >> $GITHUB_ENV
         
         cat > output/build_info.txt << EOF
         Kernel: $KERNEL_NAME
         Device: $DEVICE
         Version: $KERNEL_VERSION
-        KernelSU: ${{ inputs.kernelsu_variant }} (${{ env.KSU_GIT_VERSION }}) # Use KSU_GIT_VERSION
+        KernelSU: ${{ inputs.kernelsu_variant }} (${{ inputs.kernelsu_tag }})
         SUSFS: ${{ inputs.susfs_repo }}
         Built: $(date)
         Builder: $BUILD_USER
@@ -520,8 +549,7 @@ jobs:
         do.systemless=1
         do.cleanup=1
         do.cleanuponabort=0
-        # Dynamically add device names from inputs.device if needed, or keep hardcoded if these are for S10 series specifically
-        device.name1=${{ inputs.device }}
+        device.name1=$DEVICE
         device.name2=beyond2lte
         device.name3=SM-G975F
         device.name4=beyond1lte  
@@ -541,7 +569,6 @@ jobs:
         . tools/ak3-core.sh;
         
         ## AnyKernel file attributes
-        # Ensure these paths are correct for your boot image structure
         set_perm_recursive 0 0 755 644 \$ramdisk/*;
         set_perm_recursive 0 0 750 750 \$ramdisk/init* \$ramdisk/sbin;
         
@@ -551,10 +578,6 @@ jobs:
         EOF
         
         cp ../output/Image .
-        if [ -f ../output/dtbo.img ]; then # Copy dtbo.img if present
-            cp ../output/dtbo.img .
-        fi
-        
         zip -r ../output/$KERNEL_ZIP ./* -x "*.git*" "*.md" "*.txt"
         cd ..
         rm -rf anykernel3
@@ -573,7 +596,7 @@ jobs:
 
     - name: Create release
       uses: softprops/action-gh-release@v1
-      if: github.ref == 'refs/heads/main' # Only create release on 'main' branch push
+      if: github.ref == 'refs/heads/main'
       with:
         tag_name: ${{ env.KERNEL_VERSION }}-${{ github.run_number }}
         name: ${{ env.KERNEL_NAME }} - ${{ env.KERNEL_VERSION }}
@@ -582,7 +605,7 @@ jobs:
           
           **Device:** ${{ env.DEVICE }}
           **Kernel Version:** ${{ env.KERNEL_VERSION }}
-          **KernelSU:** ${{ inputs.kernelsu_variant }} (${{ env.KSU_GIT_VERSION }})
+          **KernelSU:** ${{ inputs.kernelsu_variant }} (${{ inputs.kernelsu_tag }})
           **SUSFS:** ${{ inputs.susfs_repo }}
           **Built:** $(date)
           
@@ -610,7 +633,7 @@ jobs:
         echo "- **Kernel:** $KERNEL_NAME" >> $GITHUB_STEP_SUMMARY
         echo "- **Device:** $DEVICE" >> $GITHUB_STEP_SUMMARY
         echo "- **Version:** $KERNEL_VERSION" >> $GITHUB_STEP_SUMMARY
-        echo "- **KernelSU:** ${{ inputs.kernelsu_variant }} (${{ env.KSU_GIT_VERSION }})" >> $GITHUB_STEP_SUMMARY
+        echo "- **KernelSU:** ${{ inputs.kernelsu_variant }} (${{ inputs.kernelsu_tag }})" >> $GITHUB_STEP_SUMMARY
         echo "- **SUSFS:** ${{ inputs.susfs_repo }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Output:** \`$KERNEL_ZIP\`" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
